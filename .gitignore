@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment — never commit API keys
+.env
+
+# Runtime data — personal, not for sharing
+store/
+workspace/
+
+# Migration state — local only
+migrations/.applied.json
+
+# Logs
+*.log
+/tmp/claudeclaw.*
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.wwebjs_cache/
+
+# Personal scripts — not for sharing
+scripts/waste-reminder.sh
+
+# Personal config — lives in CLAUDECLAW_CONFIG (default ~/.claudeclaw)
+CLAUDE.md
+agents/*/agent.yaml
+agents/*/CLAUDE.md

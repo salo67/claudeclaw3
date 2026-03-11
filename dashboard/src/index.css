@@ -1,0 +1,293 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=DM+Sans:wght@400;500;700&family=Space+Mono:wght@400;700&family=Work+Sans:wght@400;500;700&family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;500;700&family=Instrument+Sans:wght@400;500;700&family=VT323&family=IBM+Plex+Mono:wght@400;500;700&family=Cormorant+Garamond:wght@400;600;700&family=Source+Serif+4:wght@400;600;700&display=swap');
+@import "tailwindcss";
+
+html {
+  font-size: calc(16px * var(--font-scale, 1));
+}
+
+@theme {
+  /* Base tokens - overridden by JS theme application */
+  --color-surface: #0a0014;
+  --color-surface-raised: #120024;
+  --color-surface-overlay: #1a0033;
+  --color-border: #1f0040;
+  --color-border-bright: #ff008050;
+  --color-accent: #00fff5;
+  --color-accent-dim: #008b8b;
+  --color-text-primary: #e0f7fa;
+  --color-text-secondary: #80cbc4;
+  --color-text-muted: #37474f;
+  --color-status-active: #00ff41;
+  --color-status-paused: #ff0080;
+  --color-status-done: #00fff5;
+  --font-display: 'Orbitron', 'Rajdhani', sans-serif;
+  --font-body: 'Rajdhani', 'Exo 2', sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-surface text-text-primary font-body antialiased;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  /* Dynamic background pattern from theme */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image: var(--theme-scanline, none);
+  }
+
+  /* All content above the scanline overlay */
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Smooth color transitions on theme switch */
+  *, *::before, *::after {
+    transition-property: background-color, border-color, color, box-shadow;
+    transition-duration: 0.2s;
+    transition-timing-function: ease;
+  }
+
+  /* Opt out transitions for animations and transforms */
+  .no-theme-transition, .no-theme-transition * {
+    transition: none !important;
+  }
+}
+
+/* ── Theme-specific overrides ─────────────────────────────── */
+
+/* Brutalist: light bg, no rounding, thick black borders, magenta accent */
+[data-theme="brutalist"] * {
+  border-radius: 0 !important;
+}
+[data-theme="brutalist"] body {
+  background-image: none;
+  background-color: #f0f0f0;
+}
+[data-theme="brutalist"] ::-webkit-scrollbar-thumb {
+  background: #1a1a1a;
+}
+[data-theme="brutalist"] ::-webkit-scrollbar-thumb:hover {
+  background: #e91e7a;
+}
+
+/* NeoBrutalist: thick borders, offset shadows, lavender bg */
+[data-theme="neobrutalist"] body {
+  background-image: none;
+  background-color: #f0ecf9;
+}
+[data-theme="neobrutalist"] * {
+  border-radius: 0 !important;
+}
+
+/* CyberPunk: scanlines + glow + neon cards */
+[data-theme="cyberpunk"] body {
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(0,255,245,0.02) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+/* Theme card -- uses CSS vars set by JS per theme */
+.theme-card {
+  border-style: solid;
+  border-color: var(--theme-card-border, var(--color-border));
+  border-radius: var(--theme-radius, 8px);
+  border-width: var(--theme-border-width, 1px);
+  box-shadow: var(--theme-card-shadow, none);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.theme-card:hover {
+  border-color: var(--theme-card-hover-border, var(--color-border-bright));
+  box-shadow: var(--theme-card-hover-shadow, none);
+}
+
+/* Terminal: CRT phosphor effect */
+[data-theme="terminal"] body {
+  background-image: none;
+  background-color: #050505;
+}
+[data-theme="terminal"] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.4) 100%);
+}
+
+/* Minimal: clean white */
+[data-theme="minimal"] body {
+  background-image: none;
+  background-color: #fafafa;
+}
+
+/* Sumi-e: warm paper texture */
+[data-theme="sumie"] body {
+  background-image: none;
+  background-color: #f5f0e8;
+}
+[data-theme="sumie"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%231a1a1a'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+
+/* Aurora: dark purple with ambient gradient glow */
+[data-theme="aurora"] body {
+  background-color: #130e24;
+  background-image:
+    radial-gradient(circle at 20% 80%, rgba(124,92,252,0.06) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(52,211,153,0.04) 0%, transparent 50%);
+}
+
+/* Aurora: all cards get a rich purple gradient + violet glow border */
+[data-theme="aurora"] .bg-surface-raised {
+  background: linear-gradient(145deg, #1f1545 0%, #160f30 100%) !important;
+  border-color: rgba(124,92,252,0.2) !important;
+  box-shadow: 0 0 20px rgba(124,92,252,0.06), inset 0 1px 0 rgba(124,92,252,0.1) !important;
+}
+[data-theme="aurora"] .bg-surface-raised:hover {
+  border-color: rgba(124,92,252,0.4) !important;
+  box-shadow: 0 0 30px rgba(124,92,252,0.12), inset 0 1px 0 rgba(124,92,252,0.15) !important;
+}
+/* Aurora: colorful card variety on grid children */
+[data-theme="aurora"] .grid > .bg-surface-raised:nth-child(6n+1) {
+  background: linear-gradient(135deg, #2a1660 0%, #1a0e40 100%) !important;
+  border-color: rgba(139,92,246,0.25) !important;
+}
+[data-theme="aurora"] .grid > .bg-surface-raised:nth-child(6n+2) {
+  background: linear-gradient(135deg, #0c4a4a 0%, #082e2e 100%) !important;
+  border-color: rgba(20,184,166,0.25) !important;
+}
+[data-theme="aurora"] .grid > .bg-surface-raised:nth-child(6n+3) {
+  background: linear-gradient(135deg, #5c2e0a 0%, #3d1e06 100%) !important;
+  border-color: rgba(249,115,22,0.25) !important;
+}
+[data-theme="aurora"] .grid > .bg-surface-raised:nth-child(6n+4) {
+  background: linear-gradient(135deg, #5c1530 0%, #3d0e20 100%) !important;
+  border-color: rgba(244,63,94,0.25) !important;
+}
+[data-theme="aurora"] .grid > .bg-surface-raised:nth-child(6n+5) {
+  background: linear-gradient(135deg, #0f4528 0%, #0a2e1a 100%) !important;
+  border-color: rgba(34,197,94,0.25) !important;
+}
+[data-theme="aurora"] .grid > .bg-surface-raised:nth-child(6n+6) {
+  background: linear-gradient(135deg, #162e5c 0%, #0e1e3d 100%) !important;
+  border-color: rgba(59,130,246,0.25) !important;
+}
+
+/* Ember: deep dark with subtle red undertone */
+[data-theme="ember"] body {
+  background-color: #141011;
+  background-image:
+    radial-gradient(ellipse at 50% 0%, rgba(229,57,53,0.04) 0%, transparent 60%);
+}
+/* Ember: all cards get gradient bg + red top accent */
+[data-theme="ember"] .bg-surface-raised {
+  background: linear-gradient(180deg, #1e1618 0%, #1a1314 100%) !important;
+  border-top: 3px solid #e53935 !important;
+}
+[data-theme="ember"] .bg-surface-raised:hover {
+  background: linear-gradient(180deg, #281e22 0%, #1e1618 100%) !important;
+}
+/* Ember: rotating colors on grid children (border + tinted bg) */
+[data-theme="ember"] .grid > .bg-surface-raised:nth-child(6n+1) {
+  border-top-color: #e53935 !important;
+  background: linear-gradient(160deg, #3a1820 0%, #1a1314 70%) !important;
+}
+[data-theme="ember"] .grid > .bg-surface-raised:nth-child(6n+2) {
+  border-top-color: #ff7043 !important;
+  background: linear-gradient(160deg, #3a2218 0%, #1a1314 70%) !important;
+}
+[data-theme="ember"] .grid > .bg-surface-raised:nth-child(6n+3) {
+  border-top-color: #ffab40 !important;
+  background: linear-gradient(160deg, #3a2e18 0%, #1a1314 70%) !important;
+}
+[data-theme="ember"] .grid > .bg-surface-raised:nth-child(6n+4) {
+  border-top-color: #ef5350 !important;
+  background: linear-gradient(160deg, #3a1a1c 0%, #1a1314 70%) !important;
+}
+[data-theme="ember"] .grid > .bg-surface-raised:nth-child(6n+5) {
+  border-top-color: #e64a19 !important;
+  background: linear-gradient(160deg, #3a2015 0%, #1a1314 70%) !important;
+}
+[data-theme="ember"] .grid > .bg-surface-raised:nth-child(6n+6) {
+  border-top-color: #d84315 !important;
+  background: linear-gradient(160deg, #3a1e14 0%, #1a1314 70%) !important;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-bright);
+}
+
+/* ── Animations ───────────────────────────────────────────── */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeInUp 0.4s ease-out forwards;
+  opacity: 0;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.25s ease-out forwards;
+}
+
+/* Pulsing glow for cyberpunk accent elements */
+@keyframes neonPulse {
+  0%, 100% { filter: drop-shadow(0 0 4px var(--color-accent)); }
+  50% { filter: drop-shadow(0 0 12px var(--color-accent)); }
+}
+
+[data-theme="cyberpunk"] .neon-pulse {
+  animation: neonPulse 2s ease-in-out infinite;
+}
+
+/* Terminal cursor blink */
+@keyframes cursorBlink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+[data-theme="terminal"] .terminal-cursor::after {
+  content: '_';
+  animation: cursorBlink 1s step-end infinite;
+}
