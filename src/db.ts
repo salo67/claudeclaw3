@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -199,6 +200,139 @@ function createSchema(database: Database.Database): void {
       INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
       INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
     END;
+
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      phase TEXT NOT NULL DEFAULT 'backlog',
+      completed INTEGER NOT NULL DEFAULT 0,
+      autopilot INTEGER NOT NULL DEFAULT 0,
+      paused INTEGER NOT NULL DEFAULT 0,
+      priority TEXT NOT NULL DEFAULT 'none',
+      tags TEXT NOT NULL DEFAULT '',
+      color TEXT NOT NULL DEFAULT '#3b82f6',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_phase ON projects(phase);
+
+    CREATE TABLE IF NOT EXISTS features (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      description TEXT NOT NULL,
+      objective TEXT NOT NULL DEFAULT '',
+      acceptance_criteria TEXT NOT NULL DEFAULT '',
+      phase TEXT NOT NULL DEFAULT 'backlog',
+      autopilot INTEGER NOT NULL DEFAULT 0,
+      priority TEXT NOT NULL DEFAULT 'none',
+      completed INTEGER NOT NULL DEFAULT 0,
+      position INTEGER NOT NULL DEFAULT 0,
+      wave INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_features_project ON features(project_id);
+    CREATE INDEX IF NOT EXISTS idx_features_phase ON features(phase);
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      feature_id TEXT,
+      description TEXT NOT NULL,
+      acceptance_criteria TEXT NOT NULL DEFAULT '',
+      completed INTEGER NOT NULL DEFAULT 0,
+      verification_status TEXT NOT NULL DEFAULT '',
+      verification_output TEXT NOT NULL DEFAULT '',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (feature_id) REFERENCES features(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_feature ON tasks(feature_id);
+
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL DEFAULT '',
+      file_path TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id);
+
+    CREATE TABLE IF NOT EXISTS notes (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL,
+      tags TEXT NOT NULL DEFAULT '',
+      project_id TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      linked_task_ids TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
+    CREATE INDEX IF NOT EXISTS idx_notes_pinned ON notes(pinned, updated_at DESC);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(title, content);
+
+    CREATE TABLE IF NOT EXISTS journal_entries (
+      id TEXT PRIMARY KEY,
+      date TEXT NOT NULL UNIQUE,
+      content TEXT NOT NULL DEFAULT '',
+      mood TEXT NOT NULL DEFAULT '',
+      tags TEXT NOT NULL DEFAULT '',
+      bot_prompts TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      linked_task_ids TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_journal_date ON journal_entries(date DESC);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS journal_fts USING fts5(content);
+
+    CREATE TABLE IF NOT EXISTS alerts (
+      id TEXT PRIMARY KEY,
+      category TEXT NOT NULL DEFAULT 'system',
+      severity TEXT NOT NULL DEFAULT 'info',
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'system',
+      dismissed INTEGER NOT NULL DEFAULT 0,
+      executed INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alerts_dismissed ON alerts(dismissed, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS pulse_modules (
+      id TEXT PRIMARY KEY,
+      key TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'business',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      config TEXT NOT NULL DEFAULT '{}',
+      icon TEXT NOT NULL DEFAULT 'chart',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_pulses (
+      id TEXT PRIMARY KEY,
+      date TEXT NOT NULL,
+      snapshot TEXT NOT NULL DEFAULT '{}',
+      generated_at TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_pulses_date ON daily_pulses(date DESC);
   `);
 }
 
@@ -226,6 +360,10 @@ function runMigrations(database: Database.Database): void {
   const pkCount = sessionCols.filter((c) => c.pk > 0).length;
   if (pkCount < 2) {
     // Need to recreate table with composite PK
+    const hasAgentCol = sessionCols.some((c) => c.name === 'agent_id');
+    const selectSql = hasAgentCol
+      ? `SELECT chat_id, COALESCE(agent_id, 'main'), session_id, updated_at FROM sessions`
+      : `SELECT chat_id, 'main', session_id, updated_at FROM sessions`;
     database.exec(`
       CREATE TABLE sessions_new (
         chat_id    TEXT NOT NULL,
@@ -235,7 +373,7 @@ function runMigrations(database: Database.Database): void {
         PRIMARY KEY (chat_id, agent_id)
       );
       INSERT OR IGNORE INTO sessions_new (chat_id, agent_id, session_id, updated_at)
-        SELECT chat_id, COALESCE(agent_id, 'main'), session_id, updated_at FROM sessions;
+        ${selectSql};
       DROP TABLE sessions;
       ALTER TABLE sessions_new RENAME TO sessions;
     `);
@@ -1284,4 +1422,392 @@ export function markProjectReady(projectId: string): void {
 
 export function deleteAutopilotState(projectId: string): void {
   db.prepare('DELETE FROM autopilot_state WHERE project_id = ?').run(projectId);
+}
+
+// ── Projects ──────────────────────────────────────────────
+
+export interface Project {
+  id: string; name: string; description: string; phase: string;
+  completed: number; autopilot: number; paused: number;
+  priority: string; tags: string; color: string;
+  created_at: number; updated_at: number;
+}
+
+export function createProject(data: { name: string; description?: string; phase?: string; priority?: string; tags?: string; color?: string; autopilot?: boolean; paused?: boolean }): Project {
+  const id = randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO projects (id, name, description, phase, priority, tags, color, autopilot, paused, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, data.name, data.description || '', data.phase || 'backlog', data.priority || 'none', data.tags || '', data.color || '#3b82f6', data.autopilot ? 1 : 0, data.paused ? 1 : 0, now, now);
+  return db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Project;
+}
+
+export function getProject(id: string): Project | null {
+  return (db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Project) ?? null;
+}
+
+export function listProjects(): Project[] {
+  return db.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all() as Project[];
+}
+
+export function updateProject(id: string, data: Record<string, unknown>): void {
+  const now = Math.floor(Date.now() / 1000);
+  const allowed = ['name','description','phase','priority','tags','color','completed','autopilot','paused'];
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (allowed.includes(k)) {
+      sets.push(`${k} = ?`);
+      vals.push(typeof v === 'boolean' ? (v ? 1 : 0) : v);
+    }
+  }
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  vals.push(now, id);
+  db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function deleteProject(id: string): void {
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+}
+
+// ── Features ──────────────────────────────────────────────
+
+export interface Feature {
+  id: string; project_id: string; description: string; objective: string;
+  acceptance_criteria: string; phase: string; autopilot: number;
+  priority: string; completed: number; position: number; wave: number;
+  created_at: number; updated_at: number;
+}
+
+export function createFeature(data: { project_id: string; description: string; objective?: string; autopilot?: boolean; priority?: string }): Feature {
+  const id = randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO features (id, project_id, description, objective, autopilot, priority, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, data.project_id, data.description, data.objective || '', data.autopilot ? 1 : 0, data.priority || 'none', now, now);
+  return db.prepare('SELECT * FROM features WHERE id = ?').get(id) as Feature;
+}
+
+export function getFeature(id: string): Feature | null {
+  return (db.prepare('SELECT * FROM features WHERE id = ?').get(id) as Feature) ?? null;
+}
+
+export function listFeatures(projectId?: string): Feature[] {
+  if (projectId) {
+    return db.prepare('SELECT * FROM features WHERE project_id = ? ORDER BY position, created_at').all(projectId) as Feature[];
+  }
+  return db.prepare('SELECT * FROM features ORDER BY position, created_at').all() as Feature[];
+}
+
+export function updateFeature(id: string, data: Record<string, unknown>): void {
+  const now = Math.floor(Date.now() / 1000);
+  const allowed = ['description','objective','acceptance_criteria','phase','autopilot','priority','completed','position','wave'];
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (allowed.includes(k)) {
+      sets.push(`${k} = ?`);
+      vals.push(typeof v === 'boolean' ? (v ? 1 : 0) : v);
+    }
+  }
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  vals.push(now, id);
+  db.prepare(`UPDATE features SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function deleteFeature(id: string): void {
+  db.prepare('DELETE FROM features WHERE id = ?').run(id);
+}
+
+// ── Kanban Tasks ──────────────────────────────────────────────
+
+export interface KanbanTask {
+  id: string; project_id: string | null; feature_id: string | null;
+  description: string; acceptance_criteria: string; completed: number;
+  verification_status: string; verification_output: string; position: number;
+  created_at: number; updated_at: number;
+}
+
+export function createKanbanTask(data: { description: string; project_id?: string; feature_id?: string }): KanbanTask {
+  const id = randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO tasks (id, project_id, feature_id, description, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(id, data.project_id || null, data.feature_id || null, data.description, now, now);
+  return db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as KanbanTask;
+}
+
+export function listKanbanTasks(params?: { project_id?: string; feature_id?: string }): KanbanTask[] {
+  if (params?.project_id) {
+    return db.prepare('SELECT * FROM tasks WHERE project_id = ? ORDER BY position, created_at').all(params.project_id) as KanbanTask[];
+  }
+  if (params?.feature_id) {
+    return db.prepare('SELECT * FROM tasks WHERE feature_id = ? ORDER BY position, created_at').all(params.feature_id) as KanbanTask[];
+  }
+  return db.prepare('SELECT * FROM tasks ORDER BY position, created_at').all() as KanbanTask[];
+}
+
+export function updateKanbanTask(id: string, data: Record<string, unknown>): void {
+  const now = Math.floor(Date.now() / 1000);
+  const allowed = ['description','acceptance_criteria','completed','verification_status','verification_output','position','project_id','feature_id'];
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (allowed.includes(k)) {
+      sets.push(`${k} = ?`);
+      vals.push(typeof v === 'boolean' ? (v ? 1 : 0) : v);
+    }
+  }
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  vals.push(now, id);
+  db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function deleteKanbanTask(id: string): void {
+  db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+}
+
+// ── Documents ──────────────────────────────────────────────
+
+export interface DocumentRow {
+  id: string; project_id: string; name: string; url: string; file_path: string; created_at: number;
+}
+
+export function createDocument(data: { project_id: string; name: string; url?: string }): DocumentRow {
+  const id = randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare('INSERT INTO documents (id, project_id, name, url, created_at) VALUES (?, ?, ?, ?, ?)').run(id, data.project_id, data.name, data.url || '', now);
+  return db.prepare('SELECT * FROM documents WHERE id = ?').get(id) as DocumentRow;
+}
+
+export function listDocuments(projectId: string): DocumentRow[] {
+  return db.prepare('SELECT * FROM documents WHERE project_id = ? ORDER BY created_at DESC').all(projectId) as DocumentRow[];
+}
+
+export function deleteDocument(id: string): void {
+  db.prepare('DELETE FROM documents WHERE id = ?').run(id);
+}
+
+// ── Notes ──────────────────────────────────────────────
+
+export interface NoteRow {
+  id: string; title: string; content: string; tags: string; project_id: string | null;
+  pinned: number; created_at: number; updated_at: number;
+}
+
+export function createNote(data: { title?: string; content?: string; tags?: string; project_id?: string; pinned?: boolean }): NoteRow {
+  const id = randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO notes (id, title, content, tags, project_id, pinned, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, data.title || '', data.content || '', data.tags || '', data.project_id || null, data.pinned ? 1 : 0, now, now);
+  return db.prepare('SELECT * FROM notes WHERE id = ?').get(id) as NoteRow;
+}
+
+export function getNote(id: string): NoteRow | null {
+  return (db.prepare('SELECT * FROM notes WHERE id = ?').get(id) as NoteRow) ?? null;
+}
+
+export function listNotes(params?: { search?: string; tags?: string; project_id?: string; pinned?: string }): NoteRow[] {
+  let sql = 'SELECT * FROM notes WHERE 1=1';
+  const vals: unknown[] = [];
+  if (params?.project_id) { sql += ' AND project_id = ?'; vals.push(params.project_id); }
+  if (params?.pinned !== undefined) { sql += ' AND pinned = ?'; vals.push(params.pinned === 'true' ? 1 : 0); }
+  if (params?.tags) { sql += ' AND tags LIKE ?'; vals.push(`%${params.tags}%`); }
+  if (params?.search) { sql += ' AND (title LIKE ? OR content LIKE ?)'; vals.push(`%${params.search}%`, `%${params.search}%`); }
+  sql += ' ORDER BY pinned DESC, updated_at DESC';
+  return db.prepare(sql).all(...vals) as NoteRow[];
+}
+
+export function updateNote(id: string, data: Record<string, unknown>): NoteRow | null {
+  const now = Math.floor(Date.now() / 1000);
+  const allowed = ['title','content','tags','project_id','pinned'];
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (allowed.includes(k)) {
+      sets.push(`${k} = ?`);
+      vals.push(typeof v === 'boolean' ? (v ? 1 : 0) : v);
+    }
+  }
+  if (sets.length === 0) return getNote(id);
+  sets.push('updated_at = ?');
+  vals.push(now, id);
+  db.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  return getNote(id);
+}
+
+export function deleteNote(id: string): void {
+  db.prepare('DELETE FROM notes WHERE id = ?').run(id);
+}
+
+// ── Journal ──────────────────────────────────────────────
+
+export interface JournalEntryRow {
+  id: string; date: string; content: string; mood: string; tags: string;
+  created_at: number; updated_at: number;
+}
+
+export function getJournalEntry(date: string): JournalEntryRow | null {
+  return (db.prepare('SELECT * FROM journal_entries WHERE date = ?').get(date) as JournalEntryRow) ?? null;
+}
+
+export function listJournalEntries(limit = 30, offset = 0): JournalEntryRow[] {
+  return db.prepare('SELECT * FROM journal_entries ORDER BY date DESC LIMIT ? OFFSET ?').all(limit, offset) as JournalEntryRow[];
+}
+
+export function listJournalDates(year?: number, month?: number): string[] {
+  let sql = 'SELECT date FROM journal_entries';
+  const vals: unknown[] = [];
+  if (year && month) {
+    const prefix = `${year}-${String(month).padStart(2, '0')}`;
+    sql += ' WHERE date LIKE ?';
+    vals.push(`${prefix}%`);
+  } else if (year) {
+    sql += ' WHERE date LIKE ?';
+    vals.push(`${year}%`);
+  }
+  sql += ' ORDER BY date DESC';
+  return (db.prepare(sql).all(...vals) as { date: string }[]).map(r => r.date);
+}
+
+export function upsertJournalEntry(date: string, data: { content?: string; mood?: string; tags?: string }): JournalEntryRow {
+  const now = Math.floor(Date.now() / 1000);
+  const existing = getJournalEntry(date);
+  if (existing) {
+    const sets: string[] = ['updated_at = ?'];
+    const vals: unknown[] = [now];
+    if (data.content !== undefined) { sets.unshift('content = ?'); vals.unshift(data.content); }
+    if (data.mood !== undefined) { sets.unshift('mood = ?'); vals.unshift(data.mood); }
+    if (data.tags !== undefined) { sets.unshift('tags = ?'); vals.unshift(data.tags); }
+    vals.push(existing.id);
+    db.prepare(`UPDATE journal_entries SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  } else {
+    const id = randomUUID();
+    db.prepare(
+      `INSERT INTO journal_entries (id, date, content, mood, tags, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, date, data.content || '', data.mood || '', data.tags || '', now, now);
+  }
+  return getJournalEntry(date)!;
+}
+
+export function deleteJournalEntry(date: string): void {
+  db.prepare('DELETE FROM journal_entries WHERE date = ?').run(date);
+}
+
+// ── Alerts ──────────────────────────────────────────────
+
+export interface AlertRow {
+  id: string; category: string; severity: string; title: string;
+  description: string; action: string; source: string;
+  dismissed: number; executed: number; created_at: number;
+}
+
+export function createAlert(data: { category?: string; severity?: string; title: string; description?: string; action?: string; source?: string }): AlertRow {
+  const id = randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO alerts (id, category, severity, title, description, action, source, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, data.category || 'system', data.severity || 'info', data.title, data.description || '', data.action || '', data.source || 'system', now);
+  return db.prepare('SELECT * FROM alerts WHERE id = ?').get(id) as AlertRow;
+}
+
+export function listAlerts(dismissed = false): AlertRow[] {
+  return db.prepare('SELECT * FROM alerts WHERE dismissed = ? ORDER BY created_at DESC').all(dismissed ? 1 : 0) as AlertRow[];
+}
+
+export function dismissAlert(id: string): AlertRow | null {
+  db.prepare('UPDATE alerts SET dismissed = 1 WHERE id = ?').run(id);
+  return (db.prepare('SELECT * FROM alerts WHERE id = ?').get(id) as AlertRow) ?? null;
+}
+
+export function executeAlert(id: string): AlertRow | null {
+  db.prepare('UPDATE alerts SET executed = 1 WHERE id = ?').run(id);
+  return (db.prepare('SELECT * FROM alerts WHERE id = ?').get(id) as AlertRow) ?? null;
+}
+
+export function deleteAlert(id: string): void {
+  db.prepare('DELETE FROM alerts WHERE id = ?').run(id);
+}
+
+// ── Pulse Modules ──────────────────────────────────────────
+
+export interface PulseModule {
+  id: string; key: string; name: string; description: string; category: string;
+  enabled: number; config: string; icon: string; position: number;
+  created_at: number; updated_at: number;
+}
+
+export function listPulseModules(): PulseModule[] {
+  return db.prepare('SELECT * FROM pulse_modules ORDER BY position, created_at').all() as PulseModule[];
+}
+
+export function createPulseModule(data: { name: string; key?: string; description?: string; category?: string; config?: string; icon?: string; enabled?: boolean }): PulseModule {
+  const id = randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO pulse_modules (id, key, name, description, category, config, icon, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, data.key || data.name.toLowerCase().replace(/\s+/g, '_'), data.name, data.description || '', data.category || 'business', data.config || '{}', data.icon || 'chart', data.enabled !== false ? 1 : 0, now, now);
+  return db.prepare('SELECT * FROM pulse_modules WHERE id = ?').get(id) as PulseModule;
+}
+
+export function updatePulseModule(id: string, data: Record<string, unknown>): void {
+  const now = Math.floor(Date.now() / 1000);
+  const allowed = ['name','key','description','category','config','icon','enabled','position'];
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (allowed.includes(k)) {
+      sets.push(`${k} = ?`);
+      vals.push(typeof v === 'boolean' ? (v ? 1 : 0) : v);
+    }
+  }
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  vals.push(now, id);
+  db.prepare(`UPDATE pulse_modules SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function deletePulseModule(id: string): void {
+  db.prepare('DELETE FROM pulse_modules WHERE id = ?').run(id);
+}
+
+export function reorderPulseModules(ids: string[]): void {
+  const stmt = db.prepare('UPDATE pulse_modules SET position = ? WHERE id = ?');
+  db.transaction(() => {
+    ids.forEach((id, i) => stmt.run(i, id));
+  })();
+}
+
+// ── Daily Pulses ──────────────────────────────────────────
+
+export interface DailyPulse {
+  id: string; date: string; snapshot: string; generated_at: string; created_at: number;
+}
+
+export function getLatestPulse(): DailyPulse | null {
+  return (db.prepare('SELECT * FROM daily_pulses ORDER BY created_at DESC LIMIT 1').get() as DailyPulse) ?? null;
+}
+
+export function listDailyPulses(page = 1, pageSize = 10): { items: DailyPulse[]; total: number } {
+  const total = (db.prepare('SELECT COUNT(*) as c FROM daily_pulses').get() as { c: number }).c;
+  const offset = (page - 1) * pageSize;
+  const items = db.prepare('SELECT * FROM daily_pulses ORDER BY created_at DESC LIMIT ? OFFSET ?').all(pageSize, offset) as DailyPulse[];
+  return { items, total };
+}
+
+export function insertDailyPulse(data: { id: string; date: string; snapshot: string; generated_at: string }): void {
+  db.prepare('INSERT INTO daily_pulses (id, date, snapshot, generated_at, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    data.id, data.date, data.snapshot, data.generated_at, Math.floor(Date.now() / 1000),
+  );
 }

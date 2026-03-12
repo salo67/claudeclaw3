@@ -114,6 +114,17 @@ const sidebarGroups: SidebarGroup[] = [
         ),
       },
       {
+        to: '/newsletter',
+        label: 'Newsletter',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="1" width="12" height="16" rx="1" />
+            <path d="M6 5h6M6 8h6M6 11h4" />
+            <path d="M3 5h1M3 8h1" />
+          </svg>
+        ),
+      },
+      {
         to: '/pulse',
         label: 'Business Pulse',
         icon: (
@@ -170,6 +181,7 @@ const sidebarGroups: SidebarGroup[] = [
       { url: 'http://localhost:3015', label: 'Forecast', windowName: 'forecast', icon: extIcon },
       { url: 'http://localhost:5000', label: 'Supply Tracker', windowName: 'supply-tracker', icon: extIcon },
       { url: 'http://localhost:5220', label: 'Todos', windowName: 'todos', icon: extIcon },
+      { url: 'http://localhost:5230', label: 'Seeking Alpha', windowName: 'seeking-alpha', icon: extIcon },
     ],
   },
   {

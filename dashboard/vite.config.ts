@@ -1,8 +1,21 @@
 /// <reference types="vitest/config" />
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+
+// Read DASHBOARD_TOKEN from parent .env
+function getDashboardToken(): string {
+  try {
+    const envContent = readFileSync(resolve(__dirname, '../.env'), 'utf-8');
+    const match = envContent.match(/^DASHBOARD_TOKEN=(.+)$/m);
+    return match?.[1]?.trim() || '';
+  } catch { return ''; }
+}
+
+const DASHBOARD_TOKEN = getDashboardToken();
 
 export default defineConfig({
   test: {
@@ -49,7 +62,13 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     proxy: {
-      '/api': 'http://localhost:8031',
+      '/api': {
+        target: 'http://localhost:3141',
+        rewrite: (path: string) => {
+          const sep = path.includes('?') ? '&' : '?';
+          return DASHBOARD_TOKEN ? `${path}${sep}token=${DASHBOARD_TOKEN}` : path;
+        },
+      },
       '/cal-api': {
         target: 'http://localhost:8050',
         rewrite: (path: string) => path.replace(/^\/cal-api/, '/api'),
