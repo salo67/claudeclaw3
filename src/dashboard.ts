@@ -684,7 +684,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   });
 
   // ── Newsletter Latest & Generate ──
-  const newsletterOutputDir = path.resolve(STORE_DIR, '../../Proyecto Newsletter/output');
+  const newsletterOutputDir = path.resolve(STORE_DIR, '../../Proyecto Newsletter/src/output');
   const newsletterProjectDir = path.resolve(STORE_DIR, '../../Proyecto Newsletter');
 
   app.get('/api/newsletter/latest', (c) => {
@@ -733,16 +733,15 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     newsletterGenerating = true;
     try {
       const { execSync } = await import('child_process');
-      // Load .env from Newsletter project for API keys
-      const nlEnv: Record<string, string> = { ...process.env } as any;
+      // Read .env and set vars in current process before spawning
       try {
         const envContent = fs.readFileSync(path.join(newsletterProjectDir, '.env'), 'utf-8');
         for (const line of envContent.split('\n')) {
-          const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-          if (m) nlEnv[m[1]] = m[2].trim();
+          const m = line.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+          if (m) process.env[m[1]] = m[2].trim();
         }
       } catch { /* no .env */ }
-      execSync('python -m newsletter', { cwd: newsletterProjectDir, timeout: 300000, env: nlEnv });
+      execSync('python -m newsletter', { cwd: newsletterProjectDir, timeout: 300000 });
       newsletterGenerating = false;
       return c.json({ ok: true });
     } catch (e: any) {
