@@ -1,4 +1,4 @@
-"""Multi-Agent Advisor chat endpoint -- streams via Gemini 2.5 Flash with tool calling."""
+"""Multi-Agent Advisor chat endpoint -- multi-provider LLM with tool calling."""
 
 from __future__ import annotations
 
@@ -14,25 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from google import genai
-from google.genai import types
-
 from database import DB_PATH, get_db
 
 router = APIRouter()
-
-# ── Gemini client (lazy init so dotenv has time to load) ─────
-_gemini_client: genai.Client | None = None
-
-
-def _get_gemini_client() -> genai.Client:
-    global _gemini_client
-    if _gemini_client is None:
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-        os.environ.pop("GEMINI_API_KEY", None)
-        _gemini_client = genai.Client(api_key=api_key)
-    return _gemini_client
-
 
 # ── Agent definitions ────────────────────────────────────────
 
@@ -79,15 +63,23 @@ AGENT_ROLES: dict[str, dict] = {
     },
 }
 
-# ── Model switching ──────────────────────────────────────────
+# ── Model switching (multi-provider) ────────────────────────
 
-MODEL_MAP = {
-    "flash": "gemini-2.5-flash",
-    "pro": "gemini-2.5-pro",
+# Each entry: (provider_key, full_model_name, display_label)
+MODEL_MAP: dict[str, tuple[str, str, str]] = {
+    "haiku":    ("anthropic", "claude-haiku-4-5-20251001",  "Haiku 4.5"),
+    "sonnet":   ("anthropic", "claude-sonnet-4-6-20250514", "Sonnet 4.6"),
+    "flash":    ("gemini",    "gemini-2.5-flash",           "Gemini Flash"),
+    "pro":      ("gemini",    "gemini-2.5-pro",             "Gemini Pro"),
+    "gpt4o":    ("openai",    "gpt-4o",                     "GPT-4o"),
+    "gpt4m":    ("openai",    "gpt-4o-mini",                "GPT-4o Mini"),
+    "kimi":     ("kimi",      "moonshot-v1-auto",           "Kimi"),
+    "glm":      ("glm",       "glm-4-flash",                "GLM-4 Flash"),
+    "glm47":    ("glm",       "glm-4-plus",                 "GLM-4.7"),
 }
-DEFAULT_MODEL_KEY = "flash"
+DEFAULT_MODEL_KEY = "haiku"
 
-PRO_TRIGGERS = [
+DEEP_TRIGGERS = [
     "piensa profundo", "analiza a fondo", "razona esto",
     "estrategia a largo", "brainstorm", "evalua opciones",
     "pros y contras", "analisis profundo", "dame tu mejor analisis",
@@ -95,17 +87,19 @@ PRO_TRIGGERS = [
 ]
 
 
-def _resolve_model(explicit: str | None, message: str, thread_id: str | None = None) -> tuple[str, str]:
-    """Resolve which Gemini model to use. Returns (full_model_name, short_key)."""
+def _resolve_model(explicit: str | None, message: str, thread_id: str | None = None) -> tuple[str, str, str]:
+    """Resolve which model to use. Returns (provider_key, full_model_name, short_key)."""
     # 1. Explicit override from request body
     if explicit and explicit in MODEL_MAP:
-        return MODEL_MAP[explicit], explicit
+        prov, model, _label = MODEL_MAP[explicit]
+        return prov, model, explicit
 
-    # 2. Auto-detect from message content
+    # 2. Auto-detect deep thinking triggers -> upgrade to sonnet
     lower = message.lower()
-    for trigger in PRO_TRIGGERS:
+    for trigger in DEEP_TRIGGERS:
         if trigger in lower:
-            return MODEL_MAP["pro"], "pro"
+            prov, model, _label = MODEL_MAP["sonnet"]
+            return prov, model, "sonnet"
 
     # 3. Thread-level default
     if thread_id:
@@ -115,12 +109,14 @@ def _resolve_model(explicit: str | None, message: str, thread_id: str | None = N
             row = conn.execute("SELECT default_model FROM advisor_threads WHERE id = ?", (thread_id,)).fetchone()
             conn.close()
             if row and row["default_model"] in MODEL_MAP and row["default_model"] != DEFAULT_MODEL_KEY:
-                return MODEL_MAP[row["default_model"]], row["default_model"]
+                prov, model, _label = MODEL_MAP[row["default_model"]]
+                return prov, model, row["default_model"]
         except Exception:
             pass
 
     # 4. Default
-    return MODEL_MAP[DEFAULT_MODEL_KEY], DEFAULT_MODEL_KEY
+    prov, model, _label = MODEL_MAP[DEFAULT_MODEL_KEY]
+    return prov, model, DEFAULT_MODEL_KEY
 
 
 # Load system context files
@@ -220,46 +216,53 @@ def _load_system_context(agent_role: str = "ceo", user_message: str = "") -> str
     except Exception:
         pass
 
+    # Email intelligence from mail-triage agent (hive_mind)
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        hive_rows = conn.execute(
+            "SELECT action, summary, artifacts, created_at FROM hive_mind "
+            "WHERE agent_id = 'mail-triage' ORDER BY created_at DESC LIMIT 5"
+        ).fetchall()
+        conn.close()
+        if hive_rows:
+            lines = ["\n---\n## Inteligencia de correo (mail-triage)"]
+            for h in hive_rows:
+                from datetime import datetime
+                ts = datetime.fromtimestamp(h["created_at"]).strftime("%Y-%m-%d %H:%M") if h["created_at"] else ""
+                lines.append(f"- [{h['action']}] ({ts}): {h['summary'][:200]}")
+                if h["artifacts"]:
+                    try:
+                        arts = json.loads(h["artifacts"])
+                        if isinstance(arts, dict):
+                            for k in ("type", "entities", "importance", "email", "name", "confidence", "pattern_type"):
+                                if k in arts:
+                                    lines.append(f"  {k}: {arts[k]}")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            parts.append("\n".join(lines))
+    except Exception:
+        pass
+
     return "\n".join(parts)
 
 
-def _build_gemini_history(history: list[dict[str, str]]) -> list[dict]:
-    """Convert our DB history to Gemini's content format, including images."""
-    import base64
-
-    contents = []
+def _build_neutral_history(history: list[dict]) -> list[dict]:
+    """Convert DB history to neutral message format for providers."""
+    messages = []
     for msg in history:
-        role = "user" if msg["role"] == "user" else "model"
-        parts: list[dict] = []
-
-        # Add image part if present (base64 data URL)
-        image_data = msg.get("image_data", "")
-        if image_data and image_data.startswith("data:"):
-            try:
-                # Parse data:image/png;base64,XXXXX
-                header, b64 = image_data.split(",", 1)
-                mime = header.split(":")[1].split(";")[0]
-                parts.append({
-                    "inline_data": {
-                        "mime_type": mime,
-                        "data": b64,
-                    }
-                })
-            except (ValueError, IndexError):
-                pass
-
-        text_content = msg["content"] or ""
-        # Tag assistant messages with agent name so the model knows who said what
-        if role == "model" and msg.get("agent_role") and text_content:
-            agent_name = AGENT_ROLES.get(msg["agent_role"], {}).get("name", "")
-            if agent_name:
-                text_content = f"[{agent_name}]: {text_content}"
-        if text_content:
-            parts.append({"text": text_content})
-
-        if parts:
-            contents.append({"role": role, "parts": parts})
-    return contents
+        m: dict = {
+            "role": msg["role"],  # "user" or "assistant"
+            "content": msg.get("content", ""),
+            "image_data": msg.get("image_data", ""),
+        }
+        # Add agent role name for tagging assistant messages
+        agent_role = msg.get("agent_role", "")
+        if agent_role:
+            agent_name = AGENT_ROLES.get(agent_role, {}).get("name", "")
+            m["agent_role_name"] = agent_name
+        messages.append(m)
+    return messages
 
 
 # ── Models ───────────────────────────────────────────────────
@@ -272,7 +275,7 @@ class MessageSend(BaseModel):
     agent_role: str | None = None
     image_data: str | None = None
     source: str = "web"
-    model: str | None = None  # "pro", "flash", or None (auto-detect)
+    model: str | None = None  # any key from MODEL_MAP, or None (auto-detect)
 
 class ThreadOut(BaseModel):
     id: str
@@ -314,6 +317,25 @@ def list_agents():
         )
         for k, v in AGENT_ROLES.items()
     ]
+
+
+# ── Available models endpoint ────────────────────────────────
+
+@router.get("/advisor/models")
+def list_models():
+    """Return available models (only those with configured API keys)."""
+    from llm_providers import is_provider_available
+
+    result = []
+    for key, (provider_key, full_model, label) in MODEL_MAP.items():
+        result.append({
+            "key": key,
+            "provider": provider_key,
+            "label": label,
+            "model": full_model,
+            "available": is_provider_available(provider_key),
+        })
+    return result
 
 
 # ── Thread CRUD ──────────────────────────────────────────────
@@ -396,7 +418,7 @@ def get_messages(thread_id: str, db: sqlite3.Connection = Depends(get_db)):
 
 
 class ThreadModelUpdate(BaseModel):
-    default_model: str  # "pro" or "flash"
+    default_model: str  # any key from MODEL_MAP
 
 
 @router.patch("/advisor/threads/{thread_id}/model")
@@ -414,8 +436,9 @@ def update_thread_model(thread_id: str, body: ThreadModelUpdate, db: sqlite3.Con
 
 @router.post("/advisor/threads/{thread_id}/send")
 async def send_message(thread_id: str, body: MessageSend):
-    """Send a message and stream the advisor response via SSE using Gemini with tool calling."""
-    from api_tools import TOOL_DECLARATIONS, execute_tool, log_cost
+    """Send a message and stream the advisor response via SSE using configurable LLM provider."""
+    from api_tools import TOOLS_SCHEMA, execute_tool, log_cost
+    from llm_providers import get_provider
 
     now = int(time.time())
     msg_id = str(uuid.uuid4())
@@ -441,14 +464,12 @@ async def send_message(thread_id: str, body: MessageSend):
     conn.commit()
 
     # Sliding window: keep only last N message pairs to control cost.
-    # 20 messages ~ 10 exchanges, enough context for coherent conversation.
     MAX_HISTORY_MESSAGES = 20
     rows = conn.execute(
         "SELECT role, content, COALESCE(image_data, '') as image_data, COALESCE(agent_role, '') as agent_role FROM advisor_messages WHERE thread_id = ? ORDER BY created_at ASC",
         (thread_id,),
     ).fetchall()
     all_history = [{"role": r[0], "content": r[1], "image_data": r[2], "agent_role": r[3]} for r in rows]
-    # Trim to last N messages but always keep the latest (current user message)
     history = all_history[-MAX_HISTORY_MESSAGES:]
     conn.close()
 
@@ -505,7 +526,7 @@ async def send_message(thread_id: str, body: MessageSend):
     )
     system_context += research_instructions
 
-    gemini_history = _build_gemini_history(history)
+    neutral_messages = _build_neutral_history(history)
 
     async def event_stream() -> AsyncGenerator[dict, None]:
         # Send agent info first so frontend knows who is responding
@@ -528,101 +549,87 @@ async def send_message(thread_id: str, body: MessageSend):
             total_input_tokens = 0
             total_output_tokens = 0
 
-            # Resolve model (Flash or Pro)
-            resolved_model, model_key = _resolve_model(body.model, body.content, thread_id)
+            # Resolve model and provider
+            provider_key, resolved_model, model_key = _resolve_model(body.model, body.content, thread_id)
 
             # Let frontend know which model is being used
-            yield {"event": "model", "data": json.dumps({"model": model_key, "model_full": resolved_model})}
+            yield {"event": "model", "data": json.dumps({"model": model_key, "model_full": resolved_model, "provider": provider_key})}
 
-            client = _get_gemini_client()
-            contents = list(gemini_history)
+            provider = get_provider(provider_key)
 
-            # Tool calling loop: resolve function calls before streaming final response
+            # Tool calling loop -- uses text-based tool results for cross-provider compat
             MAX_TOOL_ROUNDS = 3
+            tool_context_parts: list[str] = []  # Text summaries of tool interactions
+            has_used_tools = False
+
             for _round in range(MAX_TOOL_ROUNDS):
-                # Non-streaming call to check for tool use
-                result = client.models.generate_content(
+                # Build messages: original history + tool context as assistant/user text pairs
+                call_messages = list(neutral_messages)
+                if tool_context_parts:
+                    # Append tool interactions as a single assistant+user exchange
+                    call_messages.append({"role": "assistant", "content": "\n".join(tool_context_parts)})
+                    call_messages.append({"role": "user", "content": "Continua con tu respuesta usando los datos obtenidos."})
+
+                result = await provider.chat(
                     model=resolved_model,
-                    contents=contents,
-                    config={
-                        "system_instruction": system_context,
-                        "temperature": 0.7,
-                        "max_output_tokens": 4096,
-                        "tools": [TOOL_DECLARATIONS],
-                    },
+                    system=system_context,
+                    messages=call_messages,
+                    tools=TOOLS_SCHEMA,
+                    max_tokens=4096,
+                    temperature=0.7,
                 )
 
-                # Track tokens
-                if result.usage_metadata:
-                    total_input_tokens += result.usage_metadata.prompt_token_count or 0
-                    total_output_tokens += result.usage_metadata.candidates_token_count or 0
+                total_input_tokens += result.input_tokens
+                total_output_tokens += result.output_tokens
 
-                # Check if model wants to call functions
-                has_function_calls = False
-                if result.candidates and result.candidates[0].content and result.candidates[0].content.parts:
-                    function_calls = [
-                        p for p in result.candidates[0].content.parts
-                        if p.function_call is not None
-                    ]
-                    if function_calls:
-                        has_function_calls = True
-                        # Add the model's response (with function calls) to contents
-                        contents.append(result.candidates[0].content)
+                if result.tool_calls:
+                    has_used_tools = True
 
-                        # Execute each function call and build responses
-                        function_responses = []
-                        for fc_part in function_calls:
-                            fc = fc_part.function_call
-                            tool_name = fc.name
-                            tool_args = dict(fc.args) if fc.args else {}
+                    for tc in result.tool_calls:
+                        tool_args = dict(tc.args)
+                        if tc.name == "save_advisor_memory":
+                            tool_args["_agent_name"] = role_info["name"]
 
-                            # Inject agent name for memory tool
-                            if tool_name == "save_advisor_memory":
-                                tool_args["_agent_name"] = role_info["name"]
+                        yield {"event": "delta", "data": json.dumps({"text": f"\n> Consultando {tc.name}...\n"})}
 
-                            yield {"event": "delta", "data": json.dumps({"text": f"\n> Consultando {tool_name}...\n"})}
+                        tool_result_str = await execute_tool(tc.name, tool_args)
 
-                            tool_result = await execute_tool(tool_name, tool_args)
-                            function_responses.append(
-                                types.Part(function_response=types.FunctionResponse(
-                                    name=tool_name,
-                                    response={"result": tool_result},
-                                ))
-                            )
+                        # Store as text for next round
+                        tool_context_parts.append(
+                            f"[Herramienta: {tc.name}({json.dumps(tc.args, ensure_ascii=False)[:200]})]\n"
+                            f"Resultado: {tool_result_str[:4000]}"
+                        )
 
-                        # Add function responses to contents
-                        contents.append(types.Content(role="user", parts=function_responses))
-                        continue  # Loop back for model to process results
+                    continue  # Loop back for model to process results
 
-                # No function calls -- use this response directly (don't pay twice)
-                if result.candidates and result.candidates[0].content and result.candidates[0].content.parts:
-                    for part in result.candidates[0].content.parts:
-                        if part.text:
-                            full_response += part.text
-                            yield {"event": "delta", "data": json.dumps({"text": part.text})}
+                # No tool calls -- use this response text directly
+                if result.text:
+                    full_response = result.text
+                    yield {"event": "delta", "data": json.dumps({"text": result.text})}
                 break
 
-            # Only make a second streaming call if tools were used (need final synthesis)
-            if has_function_calls:
-                response = client.models.generate_content_stream(
+            # If tools were used, make a final streaming call for synthesis
+            if has_used_tools:
+                full_response = ""
+                stream_messages = list(neutral_messages)
+                if tool_context_parts:
+                    stream_messages.append({"role": "assistant", "content": "\n\n".join(tool_context_parts)})
+                    stream_messages.append({"role": "user", "content": "Ahora responde mi pregunta original usando los datos que obtuviste de las herramientas."})
+
+                async for delta in provider.chat_stream(
                     model=resolved_model,
-                    contents=contents,
-                    config={
-                        "system_instruction": system_context,
-                        "temperature": 0.7,
-                        "max_output_tokens": 4096,
-                    },
-                )
-
-                for chunk in response:
-                    if chunk.usage_metadata:
-                        total_input_tokens = chunk.usage_metadata.prompt_token_count or total_input_tokens
-                        total_output_tokens = chunk.usage_metadata.candidates_token_count or total_output_tokens
-
-                    text = chunk.text
-                    if text:
-                        full_response += text
-                        yield {"event": "delta", "data": json.dumps({"text": text})}
+                    system=system_context,
+                    messages=stream_messages,
+                    max_tokens=4096,
+                    temperature=0.7,
+                ):
+                    if delta.text:
+                        full_response += delta.text
+                        yield {"event": "delta", "data": json.dumps({"text": delta.text})}
+                    if delta.input_tokens:
+                        total_input_tokens = delta.input_tokens
+                    if delta.output_tokens:
+                        total_output_tokens = delta.output_tokens
 
             if full_response:
                 save_conn = sqlite3.connect(str(DB_PATH))
@@ -637,9 +644,9 @@ async def send_message(thread_id: str, body: MessageSend):
 
                 yield {"event": "done", "data": json.dumps({"id": assistant_id, "content": full_response, "agent_role": agent_role, "model_used": model_key})}
 
-            # Log cost to cost tracker
+            # Log cost
             await log_cost(
-                api_name="google",
+                api_name=provider_key,
                 endpoint=resolved_model,
                 tokens_in=total_input_tokens,
                 tokens_out=total_output_tokens,

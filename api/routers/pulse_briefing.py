@@ -9,26 +9,47 @@ import time
 
 import httpx
 from fastapi import APIRouter, Depends
-from google import genai
 
 from database import get_db
+from llm_providers import get_provider, is_provider_available
 
 router = APIRouter()
 
 _TIMEOUT = 5.0
 
-# ── Gemini client (same pattern as other pulse/journal routers) ──
 
-_gemini_client: genai.Client | None = None
+def _pick_provider() -> tuple[str, str]:
+    """Pick the best available provider/model for briefing generation."""
+    preferences = [
+        ("anthropic", "claude-haiku-4-5-20251001"),
+        ("gemini", "gemini-2.0-flash"),
+        ("openai", "gpt-4o-mini"),
+        ("glm", "glm-4-flash"),
+        ("kimi", "moonshot-v1-auto"),
+    ]
+    for pkey, model in preferences:
+        if is_provider_available(pkey):
+            return pkey, model
+    return preferences[0]
 
 
-def _get_gemini_client() -> genai.Client:
-    global _gemini_client
-    if _gemini_client is None:
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-        os.environ.pop("GEMINI_API_KEY", None)
-        _gemini_client = genai.Client(api_key=api_key)
-    return _gemini_client
+async def _llm_generate(system: str, user_content: str, temperature: float = 0.3, max_tokens: int = 500) -> str:
+    """Generate text using the best available LLM provider."""
+    pkey, model = _pick_provider()
+    provider = get_provider(pkey)
+    resp = await provider.chat(
+        model=model,
+        system=system,
+        messages=[{"role": "user", "content": user_content}],
+        tools=[],
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    raw = resp.text.strip()
+    # Strip markdown code fences if present
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    return raw
 
 
 async def _fetch_weather() -> dict:
@@ -76,11 +97,9 @@ async def _fetch_newsletter_highlights() -> list[dict]:
         return []
 
 
-def _generate_quote(journal_entries: list[dict], newsletter_highlights: list[dict]) -> str:
-    """Generate a motivational quote via Gemini based on recent journal entries."""
+async def _generate_quote(journal_entries: list[dict], newsletter_highlights: list[dict]) -> str:
+    """Generate a motivational quote based on recent journal entries."""
     try:
-        client = _get_gemini_client()
-
         journal_context = ""
         for entry in journal_entries[:5]:
             date = entry.get("date", "")
@@ -92,25 +111,16 @@ def _generate_quote(journal_entries: list[dict], newsletter_highlights: list[dic
         for nh in newsletter_highlights[:3]:
             newsletter_context += f"- {nh.get('subject', '')}\n"
 
-        prompt = f"""Eres un coach ejecutivo. Genera UNA frase motivacional corta y poderosa (máximo 2 oraciones)
-para empezar el día. Debe ser contextual basada en las entradas de journal recientes del usuario.
-
-Journal reciente:
+        system = "Eres un coach ejecutivo. Genera UNA frase motivacional corta y poderosa (maximo 2 oraciones) para empezar el dia. Responde SOLO con la frase, sin comillas, sin explicacion."
+        user_content = f"""Journal reciente:
 {journal_context if journal_context else "Sin entradas recientes."}
 
-Newsletters del día:
-{newsletter_context if newsletter_context else "Sin newsletters."}
+Newsletters del dia:
+{newsletter_context if newsletter_context else "Sin newsletters."}"""
 
-Responde SOLO con la frase motivacional, sin comillas, sin explicación."""
-
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
-            config={"temperature": 0.9, "max_output_tokens": 150},
-        )
-        return response.text.strip()
+        return await _llm_generate(system, user_content, temperature=0.9, max_tokens=150)
     except Exception:
-        return "Nuevo día, nuevas oportunidades. A darle."
+        return "Nuevo dia, nuevas oportunidades. A darle."
 
 
 def _get_recent_journal_entries(db: sqlite3.Connection) -> list[dict]:
@@ -129,42 +139,30 @@ async def pulse_briefing(db: sqlite3.Connection = Depends(get_db)) -> dict:
     weather = await _fetch_weather()
     newsletter_highlights = await _fetch_newsletter_highlights()
 
-    # Get journal entries for Gemini context
+    # Get journal entries for context
     journal_entries = _get_recent_journal_entries(db)
 
-    # Build key_points from newsletters via Gemini if we have content
+    # Build key_points from newsletters via LLM if we have content
     final_highlights = []
     if newsletter_highlights:
         try:
-            client = _get_gemini_client()
             nl_text = ""
             for nh in newsletter_highlights:
                 nl_text += f"Subject: {nh['subject']}\nSnippet: {nh.get('snippet', '')}\n\n"
 
-            kp_prompt = f"""Extrae los puntos clave de cada newsletter. Responde en JSON array:
-[{{"subject": "...", "key_points": ["punto1", "punto2"]}}]
-
-Newsletters:
+            system = "Extrae los puntos clave de cada newsletter. Responde SOLO con un JSON array, sin markdown."
+            user_content = f"""Newsletters:
 {nl_text}
 
-Responde SOLO con el JSON array, sin markdown, sin explicación."""
+Formato esperado: [{{"subject": "...", "key_points": ["punto1", "punto2"]}}]"""
 
-            kp_response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=kp_prompt,
-                config={"temperature": 0.3, "max_output_tokens": 500},
-            )
-            text = kp_response.text.strip()
-            # Strip markdown code fences if present
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            text = await _llm_generate(system, user_content, temperature=0.3, max_tokens=500)
             final_highlights = json.loads(text)
         except Exception:
-            # Fallback: return subjects without key_points
             final_highlights = [{"subject": nh["subject"], "key_points": []} for nh in newsletter_highlights]
 
     # Generate motivational quote (uses journal context)
-    quote = _generate_quote(journal_entries, newsletter_highlights)
+    quote = await _generate_quote(journal_entries, newsletter_highlights)
 
     return {
         "quote": quote,

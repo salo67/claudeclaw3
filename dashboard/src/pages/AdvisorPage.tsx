@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { advisor, tts, type AdvisorThread, type AdvisorMessage, type AgentInfo } from '../lib/api';
+import { advisor, tts, type AdvisorThread, type AdvisorMessage, type AgentInfo, type ModelInfo } from '../lib/api';
 
 const DEFAULT_AGENTS: AgentInfo[] = [
   { key: 'ceo', label: 'Arturo - CEO Strategist', color: '#5eead4', avatar: 'A', name: 'Arturo', bg_color: '#0a2e2e', voice_id: '' },
@@ -23,14 +23,29 @@ export default function AdvisorPage() {
   const [pendingImage, setPendingImage] = useState<string | null>(null);
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [streamModelUsed, setStreamModelUsed] = useState<string>('');
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Load agents + threads
+  // Load agents + threads + models
   useEffect(() => {
     advisor.agents().then(setAgents).catch(() => setAgents(DEFAULT_AGENTS));
     advisor.threads().then(setThreads).catch(console.error);
+    advisor.models().then(setAvailableModels).catch(() => {});
+  }, []);
+
+  // Close model dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+        setModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, []);
 
   useEffect(() => {
@@ -461,28 +476,59 @@ export default function AdvisorPage() {
               style={{ minHeight: '40px' }}
               disabled={streaming}
             />
-            <button
-              type="button"
-              onClick={() => setModelOverride(modelOverride === 'pro' ? null : 'pro')}
-              title={modelOverride === 'pro' ? 'Modo Pro activo (click para auto)' : 'Activar modo Pro (razonamiento profundo)'}
-              className={`shrink-0 w-9 h-9 flex items-center justify-center rounded-md border transition-all ${
-                modelOverride === 'pro'
-                  ? 'border-purple-500/60 bg-purple-500/15 text-purple-400'
-                  : 'border-border text-text-muted hover:text-text-primary hover:border-text-muted'
-              }`}
-              disabled={streaming}
-            >
-              {modelOverride === 'pro' ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v10h16V10a2 2 0 0 0-2-2h-2V6a4 4 0 0 0-4-4z" />
-                  <circle cx="12" cy="15" r="2" />
-                </svg>
-              ) : (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <div ref={modelDropdownRef} className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
+                title={modelOverride ? `Modelo: ${availableModels.find(m => m.key === modelOverride)?.label || modelOverride}` : 'Auto (click para cambiar modelo)'}
+                className={`h-9 px-2 flex items-center gap-1 rounded-md border transition-all text-xs font-display ${
+                  modelOverride
+                    ? 'border-accent/50 bg-accent/10 text-accent'
+                    : 'border-border text-text-muted hover:text-text-primary hover:border-text-muted'
+                }`}
+                disabled={streaming}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
                 </svg>
+                <span>{modelOverride ? (availableModels.find(m => m.key === modelOverride)?.label || modelOverride) : 'Auto'}</span>
+              </button>
+              {modelDropdownOpen && (
+                <div className="absolute bottom-full mb-1 right-0 w-48 bg-surface-raised border border-border rounded-lg shadow-xl z-50 py-1 max-h-64 overflow-y-auto">
+                  <button
+                    onClick={() => { setModelOverride(null); setModelDropdownOpen(false); }}
+                    className={`w-full text-left px-3 py-2 text-xs font-display transition-colors ${
+                      !modelOverride ? 'text-accent bg-accent/10' : 'text-text-primary hover:bg-surface'
+                    }`}
+                  >
+                    Auto (default)
+                  </button>
+                  {availableModels.filter(m => m.available).map(m => (
+                    <button
+                      key={m.key}
+                      onClick={() => { setModelOverride(m.key); setModelDropdownOpen(false); }}
+                      className={`w-full text-left px-3 py-2 text-xs font-display transition-colors flex items-center justify-between ${
+                        modelOverride === m.key ? 'text-accent bg-accent/10' : 'text-text-primary hover:bg-surface'
+                      }`}
+                    >
+                      <span>{m.label}</span>
+                      <span className="text-text-muted text-[10px]">{m.provider}</span>
+                    </button>
+                  ))}
+                  {availableModels.some(m => !m.available) && (
+                    <>
+                      <div className="border-t border-border my-1" />
+                      <div className="px-3 py-1 text-[10px] text-text-muted">Sin API key:</div>
+                      {availableModels.filter(m => !m.available).map(m => (
+                        <div key={m.key} className="px-3 py-1.5 text-xs text-text-muted/50">
+                          {m.label}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
               )}
-            </button>
+            </div>
             <button
               onClick={sendMessage}
               disabled={(!input.trim() && !pendingImage) || streaming}
@@ -496,7 +542,7 @@ export default function AdvisorPage() {
             </button>
           </div>
           <p className="text-text-muted text-[10px] font-display mt-2 text-center">
-            Enter para enviar / Shift+Enter nueva linea / @agent para forzar / Flash o Pro con el toggle
+            Enter para enviar / Shift+Enter nueva linea / @agent para forzar / modelo configurable
           </p>
         </div>
       </div>

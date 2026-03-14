@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 
 const API = '/mail-api';
 
-type Tab = 'inbox' | 'threads' | 'digest' | 'rules' | 'smart-review';
+type Tab = 'inbox' | 'threads' | 'digest' | 'rules' | 'smart-review' | 'learning';
 
 interface Email {
   id: number;
@@ -98,6 +98,36 @@ interface SmartReview {
   hours: number;
 }
 
+interface LearnedRule {
+  id: number;
+  pattern_type: string;
+  pattern_key: string;
+  pattern_value: Record<string, unknown>;
+  confidence: number;
+  sample_count: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+interface LearningStats {
+  total_rules: number;
+  active_rules: number;
+  avg_confidence: number;
+  by_pattern_type: Record<string, number>;
+  feedback_counts: Record<string, number>;
+}
+
+interface SenderScore {
+  email: string;
+  name: string;
+  importance_score: number;
+  email_count: number;
+  read_rate: number;
+  positive_signals: number;
+  negative_signals: number;
+}
+
 interface Stats {
   total: number;
   unread: number;
@@ -134,6 +164,14 @@ const categoryColor: Record<string, string> = {
   cliente: 'bg-amber-500/20 text-amber-400',
   sistema: 'bg-zinc-500/20 text-zinc-400',
   newsletter: 'bg-indigo-500/20 text-indigo-400',
+};
+
+const patternTypeColor: Record<string, string> = {
+  sender_importance: 'bg-emerald-500/20 text-emerald-400',
+  domain_pattern: 'bg-violet-500/20 text-violet-400',
+  subject_keyword: 'bg-amber-500/20 text-amber-400',
+  category_override: 'bg-cyan-500/20 text-cyan-400',
+  urgency_boost: 'bg-red-500/20 text-red-400',
 };
 
 const sourceIcon: Record<string, string> = {
@@ -281,6 +319,7 @@ export default function CorreoPage() {
     { key: 'digest', label: 'Digest' },
     { key: 'rules', label: 'Reglas' },
     { key: 'smart-review', label: 'Smart Review' },
+    { key: 'learning', label: 'Aprendizaje' },
   ];
 
   return (
@@ -391,6 +430,7 @@ export default function CorreoPage() {
       {tab === 'smart-review' && (
         <SmartReviewView review={smartReview} loading={loading} setReview={setSmartReview} setLoading={setLoading} />
       )}
+      {tab === 'learning' && <LearningView />}
     </div>
   );
 }
@@ -680,6 +720,18 @@ function InboxView({
   stats: Stats | null;
 }) {
   const categories = stats ? Object.keys(stats.by_category) : [];
+  const [feedbackSent, setFeedbackSent] = useState<Record<number, boolean>>({});
+
+  const handleFeedback = async (emailId: number, type: string) => {
+    try {
+      await fetch(`${API}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email_id: emailId, feedback_type: type }),
+      });
+      setFeedbackSent(prev => ({ ...prev, [emailId]: true }));
+    } catch { /* ignore */ }
+  };
 
   return (
     <div className="flex gap-4">
@@ -815,6 +867,33 @@ function InboxView({
           </div>
           <div className="text-xs text-text-muted mb-4">
             {new Date(selectedEmail.date).toLocaleString('es-MX')}
+          </div>
+          {/* Feedback */}
+          <div className="flex items-center gap-2 mb-4 pb-3 border-b border-border">
+            <span className="text-xs text-text-muted">Importancia:</span>
+            <button
+              type="button"
+              onClick={() => handleFeedback(selectedEmail.id, 'marked_important')}
+              className="p-1.5 rounded-lg hover:bg-emerald-500/20 text-text-muted hover:text-emerald-400 transition-colors"
+              title="Importante"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                <path d="M1 8.998a1 1 0 0 1 1-1h3v10H2a1 1 0 0 1-1-1v-8Zm5 9.236V7.665l3.272-5.927A.5.5 0 0 1 9.71 1.5a2.5 2.5 0 0 1 2.5 2.5c0 .652-.13 1.274-.363 1.84L10.96 8h5.54a2.5 2.5 0 0 1 2.425 3.11l-1.5 6A2.5 2.5 0 0 1 15 19H6.234Z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleFeedback(selectedEmail.id, 'marked_unimportant')}
+              className="p-1.5 rounded-lg hover:bg-red-500/20 text-text-muted hover:text-red-400 transition-colors"
+              title="No importante"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                <path d="M19 11.002a1 1 0 0 1-1 1h-3v-10h2a1 1 0 0 1 1 1v8Zm-5-9.236v10.57l-3.272 5.926a.5.5 0 0 1-.438.238 2.5 2.5 0 0 1-2.5-2.5c0-.652.13-1.274.363-1.84l.887-2.162H3.5A2.5 2.5 0 0 1 1.075 9.89l1.5-6A2.5 2.5 0 0 1 5 1.002h8.766Z" />
+              </svg>
+            </button>
+            {feedbackSent[selectedEmail.id] && (
+              <span className="text-xs text-emerald-400 ml-1">Guardado</span>
+            )}
           </div>
           <div className="text-sm text-text-secondary whitespace-pre-wrap leading-relaxed max-h-[60vh] overflow-y-auto">
             {selectedEmail.body_text || '(sin contenido)'}
@@ -1226,6 +1305,215 @@ function RulesView({ rules, loading, onRefresh }: { rules: Rule[]; loading: bool
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* --- Learning ----------------------------------------------------------- */
+
+function LearningView() {
+  const [learningStats, setLearningStats] = useState<LearningStats | null>(null);
+  const [senderScores, setSenderScores] = useState<SenderScore[]>([]);
+  const [learnedRules, setLearnedRules] = useState<LearnedRule[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [runningLearning, setRunningLearning] = useState(false);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [statsRes, scoresRes, rulesRes] = await Promise.all([
+        fetch(`${API}/learning/stats`),
+        fetch(`${API}/learning/sender-scores`),
+        fetch(`${API}/learning/rules`),
+      ]);
+      if (statsRes.ok) setLearningStats(await statsRes.json());
+      if (scoresRes.ok) {
+        const data = await scoresRes.json();
+        setSenderScores(Array.isArray(data) ? data : data.scores || []);
+      }
+      if (rulesRes.ok) {
+        const data = await rulesRes.json();
+        setLearnedRules(Array.isArray(data) ? data : data.rules || []);
+      }
+    } catch { /* offline */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const runLearning = async () => {
+    setRunningLearning(true);
+    try {
+      await fetch(`${API}/learning/run`, { method: 'POST' });
+      await fetchAll();
+    } catch { /* offline */ }
+    setRunningLearning(false);
+  };
+
+  const toggleRule = async (rule: LearnedRule) => {
+    try {
+      await fetch(`${API}/learning/rules/${rule.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: !rule.is_active }),
+      });
+      setLearnedRules(prev => prev.map(r => r.id === rule.id ? { ...r, is_active: !r.is_active } : r));
+    } catch { /* offline */ }
+  };
+
+  const deleteRule = async (ruleId: number) => {
+    try {
+      await fetch(`${API}/learning/rules/${ruleId}`, { method: 'DELETE' });
+      setLearnedRules(prev => prev.filter(r => r.id !== ruleId));
+    } catch { /* offline */ }
+  };
+
+  const scoreColor = (score: number) => {
+    if (score >= 0.7) return 'bg-emerald-500';
+    if (score >= 0.4) return 'bg-amber-500';
+    return 'bg-red-500';
+  };
+
+  const feedbackTotal = learningStats
+    ? Object.values(learningStats.feedback_counts).reduce((a, b) => a + b, 0)
+    : 0;
+
+  if (loading) {
+    return <div className="text-center py-12 text-text-muted text-sm">Cargando aprendizaje...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="font-display text-lg font-bold text-text-primary">Aprendizaje</h2>
+        <button
+          type="button"
+          onClick={runLearning}
+          disabled={runningLearning}
+          className="px-4 py-1.5 rounded-lg bg-accent/10 text-accent text-sm font-display font-medium hover:bg-accent/20 transition-colors disabled:opacity-50"
+        >
+          {runningLearning ? 'Ejecutando...' : 'Ejecutar Aprendizaje'}
+        </button>
+      </div>
+
+      {/* Stats cards */}
+      {learningStats && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-surface-raised rounded-xl p-4 border border-border">
+            <div className="text-2xl font-display font-bold text-text-primary">{learningStats.total_rules}</div>
+            <div className="text-xs text-text-muted mt-0.5">{learningStats.active_rules} activas</div>
+            <div className="text-xs text-text-secondary mt-1">Reglas aprendidas</div>
+          </div>
+          <div className="bg-surface-raised rounded-xl p-4 border border-border">
+            <div className={`text-2xl font-display font-bold ${learningStats.avg_confidence >= 0.7 ? 'text-emerald-400' : learningStats.avg_confidence >= 0.4 ? 'text-amber-400' : 'text-red-400'}`}>
+              {(learningStats.avg_confidence * 100).toFixed(0)}%
+            </div>
+            <div className="text-xs text-text-muted mt-0.5">Confianza promedio</div>
+          </div>
+          <div className="bg-surface-raised rounded-xl p-4 border border-border">
+            <div className="text-2xl font-display font-bold text-text-primary">{feedbackTotal}</div>
+            <div className="text-xs text-text-muted mt-0.5">
+              {Object.entries(learningStats.feedback_counts).map(([k, v]) => `${k}: ${v}`).join(', ') || 'Sin feedback'}
+            </div>
+            <div className="text-xs text-text-secondary mt-1">Senales feedback</div>
+          </div>
+        </div>
+      )}
+
+      {/* Two-column layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        {/* Sender Scores - left */}
+        <div className="lg:col-span-3 space-y-3">
+          <h3 className="text-sm font-display font-semibold text-text-muted uppercase tracking-wider">
+            Sender Scores
+          </h3>
+          {senderScores.length === 0 ? (
+            <div className="text-center py-8 text-text-muted text-sm">Sin datos de remitentes todavia.</div>
+          ) : (
+            <div className="bg-surface-raised rounded-xl border border-border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left text-[10px] font-display font-semibold text-text-muted uppercase tracking-wider px-4 py-2.5">Remitente</th>
+                    <th className="text-left text-[10px] font-display font-semibold text-text-muted uppercase tracking-wider px-4 py-2.5">Score</th>
+                    <th className="text-center text-[10px] font-display font-semibold text-text-muted uppercase tracking-wider px-4 py-2.5">Emails</th>
+                    <th className="text-center text-[10px] font-display font-semibold text-text-muted uppercase tracking-wider px-4 py-2.5">Read Rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {senderScores.map((s) => (
+                    <tr key={s.email} className="border-b border-border/50 last:border-0">
+                      <td className="px-4 py-2.5">
+                        <div className="text-sm text-text-primary truncate max-w-[200px]">{s.name || s.email}</div>
+                        {s.name && <div className="text-[10px] text-text-muted truncate max-w-[200px]">{s.email}</div>}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className="w-20 h-2 bg-surface-overlay rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${scoreColor(s.importance_score)}`} style={{ width: `${Math.min(s.importance_score * 100, 100)}%` }} />
+                          </div>
+                          <span className="text-xs text-text-secondary font-mono">{s.importance_score.toFixed(2)}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 text-center text-xs text-text-secondary">{s.email_count}</td>
+                      <td className="px-4 py-2.5 text-center text-xs text-text-secondary">{(s.read_rate * 100).toFixed(0)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Learned Rules - right */}
+        <div className="lg:col-span-2 space-y-3">
+          <h3 className="text-sm font-display font-semibold text-text-muted uppercase tracking-wider">
+            Reglas Aprendidas
+          </h3>
+          {learnedRules.length === 0 ? (
+            <div className="text-center py-8 text-text-muted text-sm">Sin reglas aprendidas todavia.</div>
+          ) : (
+            <div className="space-y-2">
+              {learnedRules.map((rule) => (
+                <div key={rule.id} className={`bg-surface-raised rounded-xl border border-border p-4 transition-opacity ${!rule.is_active ? 'opacity-40' : ''}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${patternTypeColor[rule.pattern_type] || 'bg-zinc-500/20 text-zinc-400'}`}>
+                      {rule.pattern_type}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleRule(rule)}
+                        title={rule.is_active ? 'Desactivar regla' : 'Activar regla'}
+                        className={`w-9 h-5 rounded-full relative transition-colors flex-shrink-0 ${rule.is_active ? 'bg-green-500' : 'bg-zinc-600'}`}
+                      >
+                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${rule.is_active ? 'left-[18px]' : 'left-0.5'}`} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteRule(rule.id)}
+                        className="text-text-muted hover:text-red-400 text-xs px-1.5 py-1 rounded transition-colors"
+                        title="Eliminar"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-sm font-display font-medium text-text-primary mb-2">{rule.pattern_key}</div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="flex-1 h-1.5 bg-surface-overlay rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${scoreColor(rule.confidence)}`} style={{ width: `${Math.min(rule.confidence * 100, 100)}%` }} />
+                    </div>
+                    <span className="text-[10px] text-text-muted font-mono">{(rule.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="text-[10px] text-text-muted">{rule.sample_count} muestras</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -7,7 +7,6 @@ import os
 from typing import Any
 
 import httpx
-from google.genai import types
 
 # ── Config ────────────────────────────────────────────────────
 
@@ -175,835 +174,851 @@ async def _web_fetch(url: str) -> dict[str, Any]:
         return {"error": f"Fetch failed: {str(e)[:200]}"}
 
 
-# ── Tool declarations for Gemini ──────────────────────────────
+# ── Tool declarations (provider-neutral JSON Schema) ─────────
 
-TOOL_DECLARATIONS = types.Tool(
-    function_declarations=[
-        # ── Hub NL query (the power tool) ──
-        types.FunctionDeclaration(
-            name="hub_query",
-            description=(
-                "Consulta en lenguaje natural al Integration Hub. El hub resuelve automaticamente "
-                "a que API interna dirigir la consulta. Usa esto cuando quieras explorar datos "
-                "sin saber exactamente que endpoint usar, o cuando quieras cruzar informacion. "
-                "Ejemplos: 'dame las ventas del modelo LP-321', 'cuanto inventario hay de sillas', "
-                "'costos del articulo ABC-123'."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "query": types.Schema(type="STRING", description="Pregunta en lenguaje natural sobre datos del negocio"),
-                    "params": types.Schema(type="STRING", description="Parametros adicionales en JSON (opcional, ej: {\"model_no\": \"LP-321\"})"),
-                },
-                required=["query"],
-            ),
-        ),
-        # ── Stockout / Cashflow (via hub) ──
-        types.FunctionDeclaration(
-            name="query_stockout_dashboard",
-            description="Dashboard de Stockout Zero: balance actual, proyecciones, entradas/salidas pendientes, alertas activas.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_stockout_products",
-            description="Buscar productos en Stockout Zero con niveles de stock, forecast de demanda y riesgo de desabasto.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "search": types.Schema(type="STRING", description="Termino de busqueda por nombre o SKU"),
-                    "limit": types.Schema(type="INTEGER", description="Max resultados (default 20)"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="query_stockout_alerts",
-            description="Alertas activas de stockout e inventario.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "active_only": types.Schema(type="BOOLEAN", description="Solo alertas activas (default true)"),
-                },
-            ),
-        ),
-        # ── Margins (via hub) ──
-        types.FunctionDeclaration(
-            name="query_margin_summary",
-            description="Resumen HQ de margenes: salud general, riesgo, tendencias, peores productos.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_margin_products",
-            description="Margenes por producto o categoria.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "search": types.Schema(type="STRING", description="Buscar por nombre de producto o categoria"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="query_margin_trends",
-            description="Productos con margenes deteriorandose. Detecta tendencias negativas para accion preventiva.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_margin_recommendations",
-            description="Recomendaciones accionables de margenes: que ajustar, que revisar, oportunidades.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_margin_blocked",
-            description="Productos bloqueados por margen rojo (no deben venderse hasta ajuste de precio).",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── Forecast (via hub) ──
-        types.FunctionDeclaration(
-            name="query_forecast",
-            description="Forecast de ventas y demanda. Sin producto: resumen de alertas. Con producto: forecast especifico por SKU.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "product": types.Schema(type="STRING", description="SKU o modelo a consultar (opcional)"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="query_forecast_alerts",
-            description="Alertas urgentes de forecast: desabasto inminente, anomalias de demanda.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_forecast_abc",
-            description="Clasificacion ABC de productos: cuales son A (80% revenue), B, C. Para priorizar atencion.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_forecast_inventory",
-            description="Dias de inventario por producto. Identifica cuales estan en zona critica.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_transit_stock",
-            description="Stock en transito: que viene en camino, cuando llega, cantidades.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── Supply Tracker (NEW via hub) ──
-        types.FunctionDeclaration(
-            name="query_supply_dashboard",
-            description="Dashboard de supply chain: ordenes activas, valor total, pendientes de pago.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_supply_orders",
-            description="Ordenes de compra con estado, proveedor, valor y fechas.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "status": types.Schema(type="STRING", description="Filtrar por estado de orden"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="query_supply_debt",
-            description="Analisis de deuda por proveedor: cuanto debemos, a quien, antiguedad.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_supply_overdue",
-            description="Pagos vencidos: cuales ya pasaron de fecha, montos, urgencia.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_supply_arrivals",
-            description="Llegadas esperadas: que mercancia viene en camino y cuando llega.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── Fill Rate (NEW via hub) ──
-        types.FunctionDeclaration(
-            name="query_fill_rate",
-            description="Fill rate de Home Depot: porcentaje de cumplimiento de ordenes, tendencia.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── Transactional SQL (NEW via hub) ──
-        types.FunctionDeclaration(
-            name="query_sales_data",
-            description="Ventas de un articulo/modelo: YTD, LYTD, R3M, R6M, R12M. Datos transaccionales reales.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "articulo": types.Schema(type="STRING", description="Codigo de articulo o modelo"),
-                },
-                required=["articulo"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="query_cost_data",
-            description="Costos de un articulo con desglose ADFA (arancel, flete, etc).",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "articulo": types.Schema(type="STRING", description="Codigo de articulo"),
-                },
-                required=["articulo"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="query_inventory_levels",
-            description="Niveles de inventario actual por articulo desde el sistema transaccional.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="query_pending_purchases",
-            description="Ordenes de compra pendientes con cantidades por recibir.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── HD Analytics (via hub) ──
-        types.FunctionDeclaration(
-            name="query_hd_analytics",
-            description="Analiticas de Home Depot: KPIs, ventas por subcategoria, top productos, analisis de stockouts.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "report_type": types.Schema(
-                        type="STRING",
-                        description="Tipo: 'summary' (KPIs), 'categories' (por subcategoria), 'products' (top productos), 'stockouts' (analisis desabasto)",
-                    ),
-                },
-            ),
-        ),
-        # ── Scheduler ──
-        types.FunctionDeclaration(
-            name="query_scheduler_jobs",
-            description="Jobs programados y su estado.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── Cashflow ──
-        types.FunctionDeclaration(
-            name="query_cashflow_summary",
-            description="Resumen de flujo de caja: balance, proyecciones, transacciones pendientes.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── Telegram ──
-        types.FunctionDeclaration(
-            name="send_telegram_notification",
-            description="Envia una notificacion a Salomon por Telegram. Usa para alertas urgentes o hallazgos importantes.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "message": types.Schema(type="STRING", description="Mensaje a enviar. HTML basico: <b>bold</b>, <i>italic</i>, <code>code</code>."),
-                },
-                required=["message"],
-            ),
-        ),
-        # ── Memory ──
-        types.FunctionDeclaration(
-            name="save_advisor_memory",
-            description=(
-                "Guarda un hecho, decision o aprendizaje importante en la memoria persistente del equipo. "
-                "NO guardes info trivial. Ejemplos: 'Salomon decidio aumentar margenes en cat X un 5%', "
-                "'El ciclo de PO de Home Depot es cada 2 semanas'."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "content": types.Schema(type="STRING", description="El hecho o decision a recordar"),
-                    "importance": types.Schema(
-                        type="STRING",
-                        description="'permanent' (reglas clave), 'important' (decisiones), 'normal' (contexto)",
-                    ),
-                },
-                required=["content", "importance"],
-            ),
-        ),
-        # ── Web research ──
-        types.FunctionDeclaration(
-            name="web_search",
-            description="Busca en internet. Para datos actualizados, noticias, precios de mercado, competidores.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "query": types.Schema(type="STRING", description="La busqueda a realizar"),
-                },
-                required=["query"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="web_fetch",
-            description="Lee el contenido de una URL.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "url": types.Schema(type="STRING", description="La URL a leer"),
-                },
-                required=["url"],
-            ),
-        ),
-        # ── Control Center project management tools ──
-        types.FunctionDeclaration(
-            name="cc_list_projects",
-            description="Lista todos los proyectos del Control Center con su fase, prioridad y estado.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="cc_create_project",
-            description="Crea un nuevo proyecto en el Control Center.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "name": types.Schema(type="STRING", description="Nombre del proyecto"),
-                    "description": types.Schema(type="STRING", description="Descripcion del proyecto"),
-                    "priority": types.Schema(type="STRING", description="Prioridad: none, low, medium, high, critical"),
-                    "phase": types.Schema(type="STRING", description="Fase: backlog, in_progress, review, released"),
-                },
-                required=["name"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_update_project",
-            description="Actualiza un proyecto: nombre, fase, prioridad, pausar, completar, autopilot.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "project_id": types.Schema(type="STRING", description="ID del proyecto"),
-                    "name": types.Schema(type="STRING", description="Nuevo nombre"),
-                    "description": types.Schema(type="STRING", description="Nueva descripcion"),
-                    "phase": types.Schema(type="STRING", description="Nueva fase"),
-                    "priority": types.Schema(type="STRING", description="Nueva prioridad"),
-                    "paused": types.Schema(type="BOOLEAN", description="Pausar/reanudar"),
-                    "completed": types.Schema(type="BOOLEAN", description="Marcar completado"),
-                    "autopilot": types.Schema(type="BOOLEAN", description="On/off autopilot"),
-                },
-                required=["project_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_list_features",
-            description="Lista features de un proyecto.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"project_id": types.Schema(type="STRING", description="ID del proyecto")},
-                required=["project_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_create_feature",
-            description="Crea feature en un proyecto.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "project_id": types.Schema(type="STRING", description="ID del proyecto padre"),
-                    "description": types.Schema(type="STRING", description="Descripcion"),
-                    "objective": types.Schema(type="STRING", description="Objetivo"),
-                    "priority": types.Schema(type="STRING", description="Prioridad"),
-                },
-                required=["project_id", "description"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_create_task",
-            description="Crea tarea en una feature o proyecto.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "description": types.Schema(type="STRING", description="Descripcion de la tarea"),
-                    "feature_id": types.Schema(type="STRING", description="Feature padre"),
-                    "project_id": types.Schema(type="STRING", description="Proyecto padre"),
-                },
-                required=["description"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_update_feature",
-            description="Actualiza feature: descripcion, fase, prioridad, completar, autopilot.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "feature_id": types.Schema(type="STRING", description="ID de la feature"),
-                    "description": types.Schema(type="STRING", description="Nueva descripcion"),
-                    "objective": types.Schema(type="STRING", description="Nuevo objetivo"),
-                    "acceptance_criteria": types.Schema(type="STRING", description="Criterios"),
-                    "phase": types.Schema(type="STRING", description="Nueva fase"),
-                    "priority": types.Schema(type="STRING", description="Nueva prioridad"),
-                    "autopilot": types.Schema(type="BOOLEAN", description="On/off autopilot"),
-                    "completed": types.Schema(type="BOOLEAN", description="Completada"),
-                },
-                required=["feature_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_list_tasks",
-            description="Lista tareas filtradas por proyecto o feature.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "project_id": types.Schema(type="STRING", description="Filtrar por proyecto"),
-                    "feature_id": types.Schema(type="STRING", description="Filtrar por feature"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_update_task",
-            description="Actualiza tarea: completar, mover, cambiar descripcion.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "task_id": types.Schema(type="STRING", description="ID de la tarea"),
-                    "description": types.Schema(type="STRING", description="Nueva descripcion"),
-                    "completed": types.Schema(type="BOOLEAN", description="Completada"),
-                    "feature_id": types.Schema(type="STRING", description="Mover a feature"),
-                    "project_id": types.Schema(type="STRING", description="Mover a proyecto"),
-                    "verification_status": types.Schema(type="STRING", description="pending, passed, failed"),
-                },
-                required=["task_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_decompose_project",
-            description="Descompone features en tareas atomicas usando Claude CLI.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"project_id": types.Schema(type="STRING", description="ID del proyecto")},
-                required=["project_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_list_autopilot_queue",
-            description="Lista tareas del autopilot (pending, running, completed, failed).",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"status": types.Schema(type="STRING", description="Filtrar por estado")},
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_retry_autopilot_task",
-            description="Reintenta tarea fallida del autopilot.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"item_id": types.Schema(type="STRING", description="ID del item")},
-                required=["item_id"],
-            ),
-        ),
-        # ── Notes/Wiki ──
-        types.FunctionDeclaration(
-            name="cc_create_note",
-            description="Crea nota en la wiki.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "title": types.Schema(type="STRING", description="Titulo"),
-                    "content": types.Schema(type="STRING", description="Contenido markdown"),
-                    "tags": types.Schema(type="STRING", description="Tags separados por coma"),
-                    "project_id": types.Schema(type="STRING", description="Vincular a proyecto"),
-                    "pinned": types.Schema(type="BOOLEAN", description="Fijar como importante"),
-                },
-                required=["title", "content"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_search_notes",
-            description="Busca notas por texto, tags o proyecto.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "search": types.Schema(type="STRING", description="Texto a buscar"),
-                    "tags": types.Schema(type="STRING", description="Filtrar por tags"),
-                    "project_id": types.Schema(type="STRING", description="Filtrar por proyecto"),
-                    "pinned": types.Schema(type="BOOLEAN", description="Solo fijadas"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_read_note",
-            description="Lee contenido completo de una nota.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"note_id": types.Schema(type="STRING", description="ID de la nota")},
-                required=["note_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_update_note",
-            description="Actualiza nota: titulo, contenido, tags, pin.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "note_id": types.Schema(type="STRING", description="ID de la nota"),
-                    "title": types.Schema(type="STRING", description="Nuevo titulo"),
-                    "content": types.Schema(type="STRING", description="Nuevo contenido"),
-                    "tags": types.Schema(type="STRING", description="Nuevos tags"),
-                    "project_id": types.Schema(type="STRING", description="Vincular a proyecto"),
-                    "pinned": types.Schema(type="BOOLEAN", description="Fijar/desfijar"),
-                },
-                required=["note_id"],
-            ),
-        ),
-        # ── Alerts ──
-        types.FunctionDeclaration(
-            name="cc_create_alert",
-            description="Crea alerta en el Control Center.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "title": types.Schema(type="STRING", description="Titulo"),
-                    "description": types.Schema(type="STRING", description="Descripcion"),
-                    "severity": types.Schema(type="STRING", description="info, warning, error, critical"),
-                    "category": types.Schema(type="STRING", description="info, stockout, margin, cashflow, system, general"),
-                    "action": types.Schema(type="STRING", description="Accion sugerida"),
-                },
-                required=["title"],
-            ),
-        ),
-        # ── PIM (direct, not via hub yet) ──
-        types.FunctionDeclaration(
-            name="pim_search_products",
-            description="Busca productos en PIM por nombre, SKU o modelo.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "search": types.Schema(type="STRING", description="Texto a buscar"),
-                    "limit": types.Schema(type="INTEGER", description="Max resultados (default 20)"),
-                },
-                required=["search"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="pim_get_product",
-            description="Detalle completo de un producto del PIM: atributos, precios, costos, media, marketplace.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"product_id": types.Schema(type="INTEGER", description="ID del producto")},
-                required=["product_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="pim_get_inventory",
-            description="Inventario actual desde PIM: stock disponible, en transito, comprometido.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="pim_get_sales_ytd",
-            description="Ventas acumuladas del anio (YTD) por producto o categoria.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="pim_get_quality_score",
-            description="Score de calidad de producto para un canal (Amazon, MercadoLibre, Home Depot).",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "product_id": types.Schema(type="INTEGER", description="ID del producto"),
-                    "channel": types.Schema(type="STRING", description="Canal: amazon, mercadolibre, homedepot"),
-                },
-                required=["product_id"],
-            ),
-        ),
-        # ── Daily Business Pulse tools ──
-        types.FunctionDeclaration(
-            name="pulse_today",
-            description="Obtener snapshot en tiempo real del Daily Business Pulse: cashflow, stockouts, KPIs HD, aprobaciones pendientes, tipo de cambio, email stats.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="pulse_latest",
-            description="Obtener el ultimo pulse generado y persistido (snapshot historico mas reciente).",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="pulse_history",
-            description="Historial de pulses generados. Util para comparar metricas entre dias.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "limit": types.Schema(type="INTEGER", description="Cantidad de pulses a obtener (default 10)"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="pulse_briefing",
-            description="Briefing personal diario: frase motivacional, clima Monterrey, highlights de newsletters.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="pulse_advisors_overnight",
-            description="Resumen de actividad de advisors en las ultimas 12 horas: decisiones tomadas, aprobaciones pendientes, acciones.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="pulse_modules",
-            description="Listar modulos configurados del Daily Business Pulse con su estado (enabled/disabled).",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── Journal (CEO diary / reflexion) ──
-        types.FunctionDeclaration(
-            name="journal_list_entries",
-            description="Lista entradas del diario/journal del CEO. Busca por texto, mood o tags. Util para entender contexto emocional y decisiones recientes.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "search": types.Schema(type="STRING", description="Buscar en contenido, tags o fecha"),
-                    "mood": types.Schema(type="STRING", description="Filtrar por mood (ej: focused, stressed, optimistic)"),
-                    "tags": types.Schema(type="STRING", description="Filtrar por tags separados por coma"),
-                    "limit": types.Schema(type="INTEGER", description="Max entradas (default 10)"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="journal_get_entry",
-            description="Lee una entrada especifica del journal por fecha (formato: YYYY-MM-DD).",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "date": types.Schema(type="STRING", description="Fecha en formato YYYY-MM-DD"),
-                },
-                required=["date"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="journal_create_entry",
-            description="Crea o actualiza una entrada en el journal del CEO. Util para registrar hallazgos, decisiones o reflexiones importantes.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "date": types.Schema(type="STRING", description="Fecha YYYY-MM-DD (default: hoy)"),
-                    "content": types.Schema(type="STRING", description="Contenido de la entrada"),
-                    "mood": types.Schema(type="STRING", description="Mood: focused, stressed, optimistic, neutral, tired, energized"),
-                    "tags": types.Schema(type="STRING", description="Tags separados por coma"),
-                },
-                required=["content"],
-            ),
-        ),
-        # ── Scheduler management ──
-        types.FunctionDeclaration(
-            name="scheduler_list_tasks",
-            description="Lista todas las tareas programadas (cron jobs) con su estado, proxima ejecucion y resultado.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "status": types.Schema(type="STRING", description="Filtrar por estado: active, paused"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="scheduler_create_task",
-            description="Crea una nueva tarea programada (cron job). Requiere prompt (que ejecutar) y schedule (expresion cron).",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "prompt": types.Schema(type="STRING", description="El prompt o comando a ejecutar"),
-                    "schedule": types.Schema(type="STRING", description="Expresion cron: '0 9 * * *' (9am diario), '0 9 * * 1' (lunes 9am), '0 */4 * * *' (cada 4h)"),
-                },
-                required=["prompt", "schedule"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="scheduler_pause_task",
-            description="Pausa una tarea programada.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "task_id": types.Schema(type="STRING", description="ID de la tarea a pausar"),
-                },
-                required=["task_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="scheduler_resume_task",
-            description="Reanuda una tarea programada que estaba pausada.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "task_id": types.Schema(type="STRING", description="ID de la tarea a reanudar"),
-                },
-                required=["task_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="scheduler_delete_task",
-            description="Elimina una tarea programada permanentemente.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "task_id": types.Schema(type="STRING", description="ID de la tarea a eliminar"),
-                },
-                required=["task_id"],
-            ),
-        ),
-        # ── Discovery Loop control ──
-        types.FunctionDeclaration(
-            name="discovery_trigger_run",
-            description="Dispara un ciclo de Discovery Loop inmediato. Los 3 advisors (CEO, Sales, Marketing) analizan datos en paralelo y generan findings.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="discovery_get_history",
-            description="Historial de ejecuciones del Discovery Loop: cuando se corrio, cuantos findings, costo.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "limit": types.Schema(type="INTEGER", description="Max resultados (default 10)"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="discovery_get_findings",
-            description="Consulta findings del Discovery Loop. Filtra por severidad o run_id. Util para ver que han detectado los otros advisors.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "severity": types.Schema(type="STRING", description="Filtrar: critical, warning, insight"),
-                    "run_id": types.Schema(type="STRING", description="Filtrar por ID de run especifico"),
-                    "limit": types.Schema(type="INTEGER", description="Max resultados (default 20)"),
-                },
-            ),
-        ),
-        # ── Alerts management (read/dismiss) ──
-        types.FunctionDeclaration(
-            name="cc_list_alerts",
-            description="Lista alertas activas del Control Center. Filtra por severidad o categoria.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "severity": types.Schema(type="STRING", description="Filtrar: info, warning, error, critical"),
-                    "category": types.Schema(type="STRING", description="Filtrar: info, stockout, margin, cashflow, system, general"),
-                    "dismissed": types.Schema(type="BOOLEAN", description="Incluir alertas descartadas (default false)"),
-                    "limit": types.Schema(type="INTEGER", description="Max resultados (default 50)"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_dismiss_alert",
-            description="Descarta/cierra una alerta del Control Center.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "alert_id": types.Schema(type="STRING", description="ID de la alerta a descartar"),
-                },
-                required=["alert_id"],
-            ),
-        ),
-        # ── Action Items (business decision pipeline) ──
-        types.FunctionDeclaration(
-            name="cc_create_action_item",
-            description="Crea un action item: propuesta de decision de negocio que requiere aprobacion del CEO. Usa esto cuando detectes algo que necesita accion pero no puedes ejecutar solo.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "title": types.Schema(type="STRING", description="Titulo corto de la propuesta"),
-                    "detail": types.Schema(type="STRING", description="Detalle completo: que, por que, opciones, costos, riesgos"),
-                    "estimated_impact": types.Schema(type="STRING", description="Impacto estimado en $ o KPIs"),
-                    "category": types.Schema(type="STRING", description="pricing, supply, marketing, operations, finance, general"),
-                    "priority": types.Schema(type="STRING", description="urgent, high, normal, low"),
-                    "finding_id": types.Schema(type="STRING", description="ID del discovery finding relacionado"),
-                },
-                required=["title", "detail"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_list_action_items",
-            description="Lista action items pendientes. Usa para ver propuestas en revision, aprobadas pendientes de ejecucion, o rechazadas con feedback del CEO.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "status": types.Schema(type="STRING", description="proposed, in_review, approved, rejected, done"),
-                    "limit": types.Schema(type="INTEGER", description="Max resultados"),
-                },
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="cc_comment_action_item",
-            description="Agrega un comentario a un action item. Usa para responder feedback del CEO, enriquecer la propuesta, o agregar datos nuevos.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "action_item_id": types.Schema(type="STRING", description="ID del action item"),
-                    "content": types.Schema(type="STRING", description="Contenido del comentario"),
-                },
-                required=["action_item_id", "content"],
-            ),
-        ),
-        # ── Exchange rate (FX) ──
-        types.FunctionDeclaration(
-            name="query_exchange_rate",
-            description="Tipo de cambio actual USD/MXN. Util para calcular impacto de importaciones y costos.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        # ── Weather (Monterrey) ──
-        types.FunctionDeclaration(
-            name="query_weather",
-            description="Clima actual y pronostico de Monterrey. Util para campanas de temporada y forecast de demanda estacional.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "city": types.Schema(type="STRING", description="Ciudad (default: Monterrey)"),
-                },
-            ),
-        ),
-        # ── API Cost tracking ──
-        types.FunctionDeclaration(
-            name="query_api_costs",
-            description="Consulta costos de uso de APIs (Gemini, etc). Cuanto hemos gastado, por proyecto, por periodo.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "period": types.Schema(type="STRING", description="Periodo: today, week, month (default: today)"),
-                },
-            ),
-        ),
-        # ── Delete note ──
-        types.FunctionDeclaration(
-            name="cc_delete_note",
-            description="Elimina una nota permanentemente.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "note_id": types.Schema(type="STRING", description="ID de la nota a eliminar"),
-                },
-                required=["note_id"],
-            ),
-        ),
-        # ── Delete task ──
-        types.FunctionDeclaration(
-            name="cc_delete_task",
-            description="Elimina una tarea permanentemente.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "task_id": types.Schema(type="STRING", description="ID de la tarea a eliminar"),
-                },
-                required=["task_id"],
-            ),
-        ),
-        # ── Research tools ──
-        types.FunctionDeclaration(
-            name="research_list",
-            description="Lista los reportes de research existentes. Devuelve id, query, modelo, status y fecha.",
-            parameters=types.Schema(type="OBJECT", properties={}),
-        ),
-        types.FunctionDeclaration(
-            name="research_read",
-            description="Lee el contenido completo de un reporte de research por su ID.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "report_id": types.Schema(type="STRING", description="ID del reporte a leer"),
-                },
-                required=["report_id"],
-            ),
-        ),
-        types.FunctionDeclaration(
-            name="research_query",
-            description="Lanza una investigacion profunda via Perplexity AI. Usa 'sonar' para rapido o 'sonar-deep-research' para profundo. El resultado se guarda automaticamente.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "query": types.Schema(type="STRING", description="Tema o pregunta a investigar"),
-                    "model": types.Schema(type="STRING", description="Modelo: 'sonar' (rapido) o 'sonar-deep-research' (profundo). Default: sonar"),
-                },
-                required=["query"],
-            ),
-        ),
-    ]
-)
+TOOLS_SCHEMA: list[dict[str, Any]] = [
+    {
+        "name": "hub_query",
+        "description": (
+            "Consulta en lenguaje natural al Integration Hub. El hub resuelve automaticamente a que API "
+            "interna dirigir la consulta. Usa esto cuando quieras explorar datos sin saber exactamente que "
+            "endpoint usar, o cuando quieras cruzar informacion. Ejemplos: 'dame las ventas del modelo "
+            "LP-321', 'cuanto inventario hay de sillas', 'costos del articulo ABC-123'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Pregunta en lenguaje natural sobre datos del negocio"},
+                "params": {"type": "string", "description": "Parametros adicionales en JSON (opcional, ej: {\"model_no\": \"LP-321\"})"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "query_stockout_dashboard",
+        "description": (
+            "Dashboard de Stockout Zero: balance actual, proyecciones, entradas/salidas pendientes, alertas "
+            "activas."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_stockout_products",
+        "description": "Buscar productos en Stockout Zero con niveles de stock, forecast de demanda y riesgo de desabasto.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "description": "Termino de busqueda por nombre o SKU"},
+                "limit": {"type": "integer", "description": "Max resultados (default 20)"},
+            },
+        },
+    },
+    {
+        "name": "query_stockout_alerts",
+        "description": "Alertas activas de stockout e inventario.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "active_only": {"type": "boolean", "description": "Solo alertas activas (default true)"},
+            },
+        },
+    },
+    {
+        "name": "query_margin_summary",
+        "description": "Resumen HQ de margenes: salud general, riesgo, tendencias, peores productos.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_margin_products",
+        "description": "Margenes por producto o categoria.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "description": "Buscar por nombre de producto o categoria"},
+            },
+        },
+    },
+    {
+        "name": "query_margin_trends",
+        "description": "Productos con margenes deteriorandose. Detecta tendencias negativas para accion preventiva.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_margin_recommendations",
+        "description": "Recomendaciones accionables de margenes: que ajustar, que revisar, oportunidades.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_margin_blocked",
+        "description": "Productos bloqueados por margen rojo (no deben venderse hasta ajuste de precio).",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_forecast",
+        "description": (
+            "Forecast de ventas y demanda. Sin producto: resumen de alertas. Con producto: forecast "
+            "especifico por SKU."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product": {"type": "string", "description": "SKU o modelo a consultar (opcional)"},
+            },
+        },
+    },
+    {
+        "name": "query_forecast_alerts",
+        "description": "Alertas urgentes de forecast: desabasto inminente, anomalias de demanda.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_forecast_abc",
+        "description": "Clasificacion ABC de productos: cuales son A (80% revenue), B, C. Para priorizar atencion.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_forecast_inventory",
+        "description": "Dias de inventario por producto. Identifica cuales estan en zona critica.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_transit_stock",
+        "description": "Stock en transito: que viene en camino, cuando llega, cantidades.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_supply_dashboard",
+        "description": "Dashboard de supply chain: ordenes activas, valor total, pendientes de pago.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_supply_orders",
+        "description": "Ordenes de compra con estado, proveedor, valor y fechas.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filtrar por estado de orden"},
+            },
+        },
+    },
+    {
+        "name": "query_supply_debt",
+        "description": "Analisis de deuda por proveedor: cuanto debemos, a quien, antiguedad.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_supply_overdue",
+        "description": "Pagos vencidos: cuales ya pasaron de fecha, montos, urgencia.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_supply_arrivals",
+        "description": "Llegadas esperadas: que mercancia viene en camino y cuando llega.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_fill_rate",
+        "description": "Fill rate de Home Depot: porcentaje de cumplimiento de ordenes, tendencia.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_sales_data",
+        "description": "Ventas de un articulo/modelo: YTD, LYTD, R3M, R6M, R12M. Datos transaccionales reales.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "articulo": {"type": "string", "description": "Codigo de articulo o modelo"},
+            },
+            "required": ["articulo"],
+        },
+    },
+    {
+        "name": "query_cost_data",
+        "description": "Costos de un articulo con desglose ADFA (arancel, flete, etc).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "articulo": {"type": "string", "description": "Codigo de articulo"},
+            },
+            "required": ["articulo"],
+        },
+    },
+    {
+        "name": "query_inventory_levels",
+        "description": "Niveles de inventario actual por articulo desde el sistema transaccional.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_pending_purchases",
+        "description": "Ordenes de compra pendientes con cantidades por recibir.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_hd_analytics",
+        "description": "Analiticas de Home Depot: KPIs, ventas por subcategoria, top productos, analisis de stockouts.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "report_type": {"type": "string", "description": "Tipo: 'summary' (KPIs), 'categories' (por subcategoria), 'products' (top productos), 'stockouts' (analisis desabasto)"},
+            },
+        },
+    },
+    {
+        "name": "query_scheduler_jobs",
+        "description": "Jobs programados y su estado.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_cashflow_summary",
+        "description": "Resumen de flujo de caja: balance, proyecciones, transacciones pendientes.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "send_telegram_notification",
+        "description": "Envia una notificacion a Salomon por Telegram. Usa para alertas urgentes o hallazgos importantes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Mensaje a enviar. HTML basico: <b>bold</b>, <i>italic</i>, <code>code</code>."},
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "save_advisor_memory",
+        "description": (
+            "Guarda un hecho, decision o aprendizaje importante en la memoria persistente del equipo. NO "
+            "guardes info trivial. Ejemplos: 'Salomon decidio aumentar margenes en cat X un 5%', 'El ciclo "
+            "de PO de Home Depot es cada 2 semanas'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "El hecho o decision a recordar"},
+                "importance": {"type": "string", "description": "'permanent' (reglas clave), 'important' (decisiones), 'normal' (contexto)"},
+            },
+            "required": ["content", "importance"],
+        },
+    },
+    {
+        "name": "web_search",
+        "description": "Busca en internet. Para datos actualizados, noticias, precios de mercado, competidores.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "La busqueda a realizar"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "web_fetch",
+        "description": "Lee el contenido de una URL.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "La URL a leer"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "cc_list_projects",
+        "description": "Lista todos los proyectos del Control Center con su fase, prioridad y estado.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "cc_create_project",
+        "description": "Crea un nuevo proyecto en el Control Center.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Nombre del proyecto"},
+                "description": {"type": "string", "description": "Descripcion del proyecto"},
+                "priority": {"type": "string", "description": "Prioridad: none, low, medium, high, critical"},
+                "phase": {"type": "string", "description": "Fase: backlog, in_progress, review, released"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "cc_update_project",
+        "description": "Actualiza un proyecto: nombre, fase, prioridad, pausar, completar, autopilot.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "ID del proyecto"},
+                "name": {"type": "string", "description": "Nuevo nombre"},
+                "description": {"type": "string", "description": "Nueva descripcion"},
+                "phase": {"type": "string", "description": "Nueva fase"},
+                "priority": {"type": "string", "description": "Nueva prioridad"},
+                "paused": {"type": "boolean", "description": "Pausar/reanudar"},
+                "completed": {"type": "boolean", "description": "Marcar completado"},
+                "autopilot": {"type": "boolean", "description": "On/off autopilot"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "cc_list_features",
+        "description": "Lista features de un proyecto.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "ID del proyecto"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "cc_create_feature",
+        "description": "Crea feature en un proyecto.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "ID del proyecto padre"},
+                "description": {"type": "string", "description": "Descripcion"},
+                "objective": {"type": "string", "description": "Objetivo"},
+                "priority": {"type": "string", "description": "Prioridad"},
+            },
+            "required": ["project_id", "description"],
+        },
+    },
+    {
+        "name": "cc_create_task",
+        "description": "Crea tarea en una feature o proyecto.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "Descripcion de la tarea"},
+                "feature_id": {"type": "string", "description": "Feature padre"},
+                "project_id": {"type": "string", "description": "Proyecto padre"},
+            },
+            "required": ["description"],
+        },
+    },
+    {
+        "name": "cc_update_feature",
+        "description": "Actualiza feature: descripcion, fase, prioridad, completar, autopilot.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "feature_id": {"type": "string", "description": "ID de la feature"},
+                "description": {"type": "string", "description": "Nueva descripcion"},
+                "objective": {"type": "string", "description": "Nuevo objetivo"},
+                "acceptance_criteria": {"type": "string", "description": "Criterios"},
+                "phase": {"type": "string", "description": "Nueva fase"},
+                "priority": {"type": "string", "description": "Nueva prioridad"},
+                "autopilot": {"type": "boolean", "description": "On/off autopilot"},
+                "completed": {"type": "boolean", "description": "Completada"},
+            },
+            "required": ["feature_id"],
+        },
+    },
+    {
+        "name": "cc_list_tasks",
+        "description": "Lista tareas filtradas por proyecto o feature.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Filtrar por proyecto"},
+                "feature_id": {"type": "string", "description": "Filtrar por feature"},
+            },
+        },
+    },
+    {
+        "name": "cc_update_task",
+        "description": "Actualiza tarea: completar, mover, cambiar descripcion.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "ID de la tarea"},
+                "description": {"type": "string", "description": "Nueva descripcion"},
+                "completed": {"type": "boolean", "description": "Completada"},
+                "feature_id": {"type": "string", "description": "Mover a feature"},
+                "project_id": {"type": "string", "description": "Mover a proyecto"},
+                "verification_status": {"type": "string", "description": "pending, passed, failed"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "cc_decompose_project",
+        "description": "Descompone features en tareas atomicas usando Claude CLI.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "ID del proyecto"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "cc_list_autopilot_queue",
+        "description": "Lista tareas del autopilot (pending, running, completed, failed).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filtrar por estado"},
+            },
+        },
+    },
+    {
+        "name": "cc_retry_autopilot_task",
+        "description": "Reintenta tarea fallida del autopilot.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "description": "ID del item"},
+            },
+            "required": ["item_id"],
+        },
+    },
+    {
+        "name": "cc_create_note",
+        "description": "Crea nota en la wiki.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Titulo"},
+                "content": {"type": "string", "description": "Contenido markdown"},
+                "tags": {"type": "string", "description": "Tags separados por coma"},
+                "project_id": {"type": "string", "description": "Vincular a proyecto"},
+                "pinned": {"type": "boolean", "description": "Fijar como importante"},
+            },
+            "required": ["title", "content"],
+        },
+    },
+    {
+        "name": "cc_search_notes",
+        "description": "Busca notas por texto, tags o proyecto.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "description": "Texto a buscar"},
+                "tags": {"type": "string", "description": "Filtrar por tags"},
+                "project_id": {"type": "string", "description": "Filtrar por proyecto"},
+                "pinned": {"type": "boolean", "description": "Solo fijadas"},
+            },
+        },
+    },
+    {
+        "name": "cc_read_note",
+        "description": "Lee contenido completo de una nota.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "note_id": {"type": "string", "description": "ID de la nota"},
+            },
+            "required": ["note_id"],
+        },
+    },
+    {
+        "name": "cc_update_note",
+        "description": "Actualiza nota: titulo, contenido, tags, pin.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "note_id": {"type": "string", "description": "ID de la nota"},
+                "title": {"type": "string", "description": "Nuevo titulo"},
+                "content": {"type": "string", "description": "Nuevo contenido"},
+                "tags": {"type": "string", "description": "Nuevos tags"},
+                "project_id": {"type": "string", "description": "Vincular a proyecto"},
+                "pinned": {"type": "boolean", "description": "Fijar/desfijar"},
+            },
+            "required": ["note_id"],
+        },
+    },
+    {
+        "name": "cc_create_alert",
+        "description": "Crea alerta en el Control Center.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Titulo"},
+                "description": {"type": "string", "description": "Descripcion"},
+                "severity": {"type": "string", "description": "info, warning, error, critical"},
+                "category": {"type": "string", "description": "info, stockout, margin, cashflow, system, general"},
+                "action": {"type": "string", "description": "Accion sugerida"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "pim_search_products",
+        "description": "Busca productos en PIM por nombre, SKU o modelo.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "description": "Texto a buscar"},
+                "limit": {"type": "integer", "description": "Max resultados (default 20)"},
+            },
+            "required": ["search"],
+        },
+    },
+    {
+        "name": "pim_get_product",
+        "description": "Detalle completo de un producto del PIM: atributos, precios, costos, media, marketplace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "integer", "description": "ID del producto"},
+            },
+            "required": ["product_id"],
+        },
+    },
+    {
+        "name": "pim_get_inventory",
+        "description": "Inventario actual desde PIM: stock disponible, en transito, comprometido.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pim_get_sales_ytd",
+        "description": "Ventas acumuladas del anio (YTD) por producto o categoria.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pim_get_quality_score",
+        "description": "Score de calidad de producto para un canal (Amazon, MercadoLibre, Home Depot).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "integer", "description": "ID del producto"},
+                "channel": {"type": "string", "description": "Canal: amazon, mercadolibre, homedepot"},
+            },
+            "required": ["product_id"],
+        },
+    },
+    {
+        "name": "pulse_today",
+        "description": (
+            "Obtener snapshot en tiempo real del Daily Business Pulse: cashflow, stockouts, KPIs HD, "
+            "aprobaciones pendientes, tipo de cambio, email stats."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pulse_latest",
+        "description": "Obtener el ultimo pulse generado y persistido (snapshot historico mas reciente).",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pulse_history",
+        "description": "Historial de pulses generados. Util para comparar metricas entre dias.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Cantidad de pulses a obtener (default 10)"},
+            },
+        },
+    },
+    {
+        "name": "pulse_briefing",
+        "description": "Briefing personal diario: frase motivacional, clima Monterrey, highlights de newsletters.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pulse_advisors_overnight",
+        "description": (
+            "Resumen de actividad de advisors en las ultimas 12 horas: decisiones tomadas, aprobaciones "
+            "pendientes, acciones."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pulse_modules",
+        "description": "Listar modulos configurados del Daily Business Pulse con su estado (enabled/disabled).",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "journal_list_entries",
+        "description": (
+            "Lista entradas del diario/journal del CEO. Busca por texto, mood o tags. Util para entender "
+            "contexto emocional y decisiones recientes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "description": "Buscar en contenido, tags o fecha"},
+                "mood": {"type": "string", "description": "Filtrar por mood (ej: focused, stressed, optimistic)"},
+                "tags": {"type": "string", "description": "Filtrar por tags separados por coma"},
+                "limit": {"type": "integer", "description": "Max entradas (default 10)"},
+            },
+        },
+    },
+    {
+        "name": "journal_get_entry",
+        "description": "Lee una entrada especifica del journal por fecha (formato: YYYY-MM-DD).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "Fecha en formato YYYY-MM-DD"},
+            },
+            "required": ["date"],
+        },
+    },
+    {
+        "name": "journal_create_entry",
+        "description": (
+            "Crea o actualiza una entrada en el journal del CEO. Util para registrar hallazgos, decisiones o "
+            "reflexiones importantes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "Fecha YYYY-MM-DD (default: hoy)"},
+                "content": {"type": "string", "description": "Contenido de la entrada"},
+                "mood": {"type": "string", "description": "Mood: focused, stressed, optimistic, neutral, tired, energized"},
+                "tags": {"type": "string", "description": "Tags separados por coma"},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "scheduler_list_tasks",
+        "description": "Lista todas las tareas programadas (cron jobs) con su estado, proxima ejecucion y resultado.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filtrar por estado: active, paused"},
+            },
+        },
+    },
+    {
+        "name": "scheduler_create_task",
+        "description": (
+            "Crea una nueva tarea programada (cron job). Requiere prompt (que ejecutar) y schedule "
+            "(expresion cron)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "El prompt o comando a ejecutar"},
+                "schedule": {"type": "string", "description": "Expresion cron: '0 9 * * *' (9am diario), '0 9 * * 1' (lunes 9am), '0 */4 * * *' (cada 4h)"},
+            },
+            "required": ["prompt", "schedule"],
+        },
+    },
+    {
+        "name": "scheduler_pause_task",
+        "description": "Pausa una tarea programada.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "ID de la tarea a pausar"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "scheduler_resume_task",
+        "description": "Reanuda una tarea programada que estaba pausada.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "ID de la tarea a reanudar"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "scheduler_delete_task",
+        "description": "Elimina una tarea programada permanentemente.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "ID de la tarea a eliminar"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "discovery_trigger_run",
+        "description": (
+            "Dispara un ciclo de Discovery Loop inmediato. Los 3 advisors (CEO, Sales, Marketing) analizan "
+            "datos en paralelo y generan findings."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "discovery_get_history",
+        "description": "Historial de ejecuciones del Discovery Loop: cuando se corrio, cuantos findings, costo.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max resultados (default 10)"},
+            },
+        },
+    },
+    {
+        "name": "discovery_get_findings",
+        "description": (
+            "Consulta findings del Discovery Loop. Filtra por severidad o run_id. Util para ver que han "
+            "detectado los otros advisors."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "severity": {"type": "string", "description": "Filtrar: critical, warning, insight"},
+                "run_id": {"type": "string", "description": "Filtrar por ID de run especifico"},
+                "limit": {"type": "integer", "description": "Max resultados (default 20)"},
+            },
+        },
+    },
+    {
+        "name": "cc_list_alerts",
+        "description": "Lista alertas activas del Control Center. Filtra por severidad o categoria.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "severity": {"type": "string", "description": "Filtrar: info, warning, error, critical"},
+                "category": {"type": "string", "description": "Filtrar: info, stockout, margin, cashflow, system, general"},
+                "dismissed": {"type": "boolean", "description": "Incluir alertas descartadas (default false)"},
+                "limit": {"type": "integer", "description": "Max resultados (default 50)"},
+            },
+        },
+    },
+    {
+        "name": "cc_dismiss_alert",
+        "description": "Descarta/cierra una alerta del Control Center.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "alert_id": {"type": "string", "description": "ID de la alerta a descartar"},
+            },
+            "required": ["alert_id"],
+        },
+    },
+    {
+        "name": "cc_create_action_item",
+        "description": (
+            "Crea un action item: propuesta de decision de negocio que requiere aprobacion del CEO. Usa esto "
+            "cuando detectes algo que necesita accion pero no puedes ejecutar solo."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Titulo corto de la propuesta"},
+                "detail": {"type": "string", "description": "Detalle completo: que, por que, opciones, costos, riesgos"},
+                "estimated_impact": {"type": "string", "description": "Impacto estimado en $ o KPIs"},
+                "category": {"type": "string", "description": "pricing, supply, marketing, operations, finance, general"},
+                "priority": {"type": "string", "description": "urgent, high, normal, low"},
+                "finding_id": {"type": "string", "description": "ID del discovery finding relacionado"},
+            },
+            "required": ["title", "detail"],
+        },
+    },
+    {
+        "name": "cc_list_action_items",
+        "description": (
+            "Lista action items pendientes. Usa para ver propuestas en revision, aprobadas pendientes de "
+            "ejecucion, o rechazadas con feedback del CEO."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "proposed, in_review, approved, rejected, done"},
+                "limit": {"type": "integer", "description": "Max resultados"},
+            },
+        },
+    },
+    {
+        "name": "cc_comment_action_item",
+        "description": (
+            "Agrega un comentario a un action item. Usa para responder feedback del CEO, enriquecer la "
+            "propuesta, o agregar datos nuevos."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action_item_id": {"type": "string", "description": "ID del action item"},
+                "content": {"type": "string", "description": "Contenido del comentario"},
+            },
+            "required": ["action_item_id", "content"],
+        },
+    },
+    {
+        "name": "query_exchange_rate",
+        "description": "Tipo de cambio actual USD/MXN. Util para calcular impacto de importaciones y costos.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_weather",
+        "description": (
+            "Clima actual y pronostico de Monterrey. Util para campanas de temporada y forecast de demanda "
+            "estacional."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "Ciudad (default: Monterrey)"},
+            },
+        },
+    },
+    {
+        "name": "query_api_costs",
+        "description": "Consulta costos de uso de APIs (Gemini, etc). Cuanto hemos gastado, por proyecto, por periodo.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "period": {"type": "string", "description": "Periodo: today, week, month (default: today)"},
+            },
+        },
+    },
+    {
+        "name": "cc_delete_note",
+        "description": "Elimina una nota permanentemente.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "note_id": {"type": "string", "description": "ID de la nota a eliminar"},
+            },
+            "required": ["note_id"],
+        },
+    },
+    {
+        "name": "cc_delete_task",
+        "description": "Elimina una tarea permanentemente.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "ID de la tarea a eliminar"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "research_list",
+        "description": "Lista los reportes de research existentes. Devuelve id, query, modelo, status y fecha.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "research_read",
+        "description": "Lee el contenido completo de un reporte de research por su ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "report_id": {"type": "string", "description": "ID del reporte a leer"},
+            },
+            "required": ["report_id"],
+        },
+    },
+    {
+        "name": "research_query",
+        "description": (
+            "Lanza una investigacion profunda via Perplexity AI. Usa 'sonar' para rapido o "
+            "'sonar-deep-research' para profundo. El resultado se guarda automaticamente."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Tema o pregunta a investigar"},
+                "model": {"type": "string", "description": "Modelo: 'sonar' (rapido) o 'sonar-deep-research' (profundo). Default: sonar"},
+            },
+            "required": ["query"],
+        },
+    },
+]
 
 
 # ── Tool execution ────────────────────────────────────────────

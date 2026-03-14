@@ -2,7 +2,28 @@
   "permissions": {
     "allow": [
       "Bash(wmic process:*)",
-      "Bash(unset CLAUDECODE)"
+      "Bash(unset CLAUDECODE)",
+      "Bash(xargs grep:*)",
+      "Bash(npm start:*)",
+      "Bash(claude --version)",
+      "Bash(pip show:*)",
+      "Bash(echo $ANTHROPIC_API_KEY)",
+      "Read(//dev/**)",
+      "Bash(WMIC PROCESS WHERE ProcessId=82000 GET Name,ExecutablePath)",
+      "Bash(WMIC PROCESS WHERE ProcessId=69520 GET Name,CommandLine)",
+      "Bash(WMIC PROCESS WHERE ProcessId=45016 GET Name,CommandLine)",
+      "Bash(grep -ri \"KIMI\\\\|MOONSHOT\" \"c:/Users/salomon.DC0/Documents/Python/Proyecto Planificador de Proyectos/.env\"*)",
+      "Bash(ls \"c:\\\\Users\\\\salomon.DC0\\\\Documents\\\\Python\\\\claudeclaw3-bueno\\\\api\\\\routers\\\\pulse_\"*)",
+      "Bash(/dev/null pm2:*)",
+      "Bash(find 'c:\\\\Users\\\\salomon.DC0\\\\Documents\\\\Python\\\\Proyecto Newsletter' -maxdepth 2 -type f -name *.json -o -name *.env* -o -name *.yml)",
+      "Bash(find 'c:\\\\Users\\\\salomon.DC0\\\\Documents\\\\Python\\\\Proyecto Newsletter' -name *.html -type f)",
+      "Bash(ls \"c:/Users/salomon.DC0/Documents/Python/Proyecto Newsletter/\"*.html)",
+      "Bash(grep -r stats.json 'c:/Users/salomon.DC0/Documents/Python/Proyecto Newsletter/' --include=*.py)",
+      "Bash(find c:Userssalomon.DC0DocumentsPythonclaudeclaw3-bueno -type d -iname *newsletter* -o -type d -iname *pulse* -o -type d -iname *output* -o -type d -iname *generated* -o -type d -iname *dist*)",
+      "Bash(grep -r \"newsletter\\\\|pulse\\\\|correo\" c:Userssalomon.DC0DocumentsPythonclaudeclaw3-bueno --include=*.js --include=*.ts)",
+      "Bash(grep -r newsletter c:Userssalomon.DC0DocumentsPythonclaudeclaw3-buenoapi --include=*.py)",
+      "Bash(xargs ls:*)",
+      "Bash(find c:Userssalomon.DC0DocumentsPythonclaudeclaw3-bueno -type f -name *newsletter* -o -name *pulse*correo*)"
     ]
   }
 }

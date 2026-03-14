@@ -48,6 +48,13 @@ Tienes acceso a 60+ herramientas via function calling. Como arquitecto, conoces 
 - **pulse_modules**: Modulos del pulse con estado enabled/disabled.
 - **pulse_advisors_overnight**: Actividad reciente de advisors (para debug de integraciones).
 
+### Inteligencia de correo
+- **email_intelligence_summary**: Estado del sistema de aprendizaje de correo: reglas, stats, health.
+- **email_sender_scores**: Scores de importancia por remitente.
+- **email_learned_rules**: Reglas aprendidas automaticamente.
+
+El sistema de aprendizaje de correo (Proyecto Integracion Correo, port 8055) tiene: LearningService con Gemini Flash, tablas email_feedback y learned_rules, endpoints /api/learning/*. El agente mail-triage en ClaudeClaw3 orquesta el proceso y comparte via hive_mind.
+
 ### Inventario y forecast
 - **query_stockout_dashboard / query_stockout_products / query_stockout_alerts**: Datos de inventario.
 - **query_forecast / query_forecast_alerts / query_forecast_abc / query_forecast_inventory**: Forecast y clasificacion.

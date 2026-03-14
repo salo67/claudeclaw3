@@ -1,6 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-import { PROJECT_ROOT, agentCwd } from './config.js';
+import { PROJECT_ROOT, agentCwd, AGENT_TIMEOUT_MS } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
@@ -33,6 +33,9 @@ export interface AgentProgressEvent {
   description: string;
 }
 
+/** Callback for streaming text deltas to the caller (e.g. Telegram). */
+export type OnTextDelta = (delta: string, accumulated: string) => void;
+
 /** Map SDK tool names to human-readable labels. */
 const TOOL_LABELS: Record<string, string> = {
   Read: 'Reading file',
@@ -63,6 +66,7 @@ export interface AgentResult {
   newSessionId: string | undefined;
   usage: UsageInfo | null;
   aborted?: boolean;
+  timedOut?: boolean;
 }
 
 /**
@@ -108,13 +112,21 @@ export async function runAgent(
   onProgress?: (event: AgentProgressEvent) => void,
   model?: string,
   abortController?: AbortController,
+  onTextDelta?: OnTextDelta,
 ): Promise<AgentResult> {
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
   // automatically. Only needed if you want to override which account is used.
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 
+  // Ensure we always have an AbortController so the timeout can abort the query.
+  if (!abortController) {
+    abortController = new AbortController();
+  }
+
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  // Remove CLAUDECODE so the subprocess doesn't think it's nested inside another session
+  delete sdkEnv.CLAUDECODE;
   if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
     sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
   }
@@ -129,6 +141,16 @@ export async function runAgent(
   let preCompactTokens: number | null = null;
   let lastCallCacheRead = 0;
   let lastCallInputTokens = 0;
+  let streamAccumulator = '';
+
+  // Timeout guard: abort if the SDK subprocess hangs for too long.
+  // This prevents the bot from showing "typing..." indefinitely.
+  let didTimeout = false;
+  const timeoutId = setTimeout(() => {
+    didTimeout = true;
+    logger.warn({ timeoutMs: AGENT_TIMEOUT_MS }, 'Agent query timed out, aborting');
+    abortController!.abort();
+  }, AGENT_TIMEOUT_MS);
 
   // Refresh typing indicator on an interval while Claude works.
   // Telegram's "typing..." action expires after ~5s.
@@ -163,8 +185,11 @@ export async function runAgent(
         // Model override (e.g. 'claude-haiku-4-5', 'claude-sonnet-4-5')
         ...(model ? { model } : {}),
 
-        // Abort support — signals the SDK to kill the subprocess
-        ...(abortController ? { abortController } : {}),
+        // Stream partial text events for real-time Telegram updates
+        ...(onTextDelta ? { includePartialMessages: true } : {}),
+
+        // Abort support — signals the SDK to kill the subprocess (also used by timeout)
+        abortController,
       },
     })) {
       const ev = event as Record<string, unknown>;
@@ -204,6 +229,23 @@ export async function runAgent(
       if (ev['type'] === 'tool_progress' && onProgress) {
         const name = (ev['tool_name'] as string) ?? 'unknown';
         onProgress({ type: 'tool_active', description: toolLabel(name) });
+      }
+
+      // Stream text deltas to caller for real-time Telegram message updates.
+      // The SDK emits stream_event with BetaRawMessageStreamEvent inside.
+      if (ev['type'] === 'stream_event' && onTextDelta) {
+        const streamEvent = ev['event'] as Record<string, unknown> | undefined;
+        if (streamEvent?.['type'] === 'content_block_delta') {
+          const delta = streamEvent['delta'] as Record<string, unknown> | undefined;
+          if (delta?.['type'] === 'text_delta' && typeof delta['text'] === 'string') {
+            streamAccumulator += delta['text'];
+            onTextDelta(delta['text'], streamAccumulator);
+          }
+        }
+        // Reset accumulator when a new assistant message starts (multi-turn tool use)
+        if (streamEvent?.['type'] === 'message_start') {
+          streamAccumulator = '';
+        }
       }
 
       // Sub-agent lifecycle events — surface to Telegram for user feedback
@@ -256,12 +298,17 @@ export async function runAgent(
       }
     }
   } catch (err) {
-    if (abortController?.signal.aborted) {
+    if (abortController.signal.aborted) {
+      if (didTimeout) {
+        logger.warn('Agent query timed out after %dms', AGENT_TIMEOUT_MS);
+        return { text: null, newSessionId, usage, aborted: true, timedOut: true };
+      }
       logger.info('Agent query aborted by user');
       return { text: null, newSessionId, usage, aborted: true };
     }
     throw err;
   } finally {
+    clearTimeout(timeoutId);
     clearInterval(typingInterval);
   }
 

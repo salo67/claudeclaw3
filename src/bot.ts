@@ -3,7 +3,7 @@ import path from 'path';
 import os from 'os';
 import { Api, Bot, Context, InputFile, RawApi } from 'grammy';
 
-import { runAgent, UsageInfo, AgentProgressEvent } from './agent.js';
+import { runAgent, UsageInfo, AgentProgressEvent, OnTextDelta } from './agent.js';
 import {
   AGENT_ID,
   ALLOWED_CHAT_ID,
@@ -322,6 +322,127 @@ export function splitMessage(text: string): string[] {
   return parts;
 }
 
+// ── Telegram Streamer ─────────────────────────────────────────────────
+// Sends text progressively by editing a Telegram message as deltas arrive.
+// Debounces edits to stay within Telegram's rate limit (~30 edits/min).
+
+const STREAM_EDIT_INTERVAL_MS = 1500; // Edit message every 1.5s
+const STREAM_CHAR_THRESHOLD = 80; // Min chars between edits to avoid tiny updates
+
+class TelegramStreamer {
+  private api: Api<RawApi>;
+  private chatId: number;
+  private messageId: number | null = null;
+  private sentMessages: number[] = [];
+  private accumulated = '';
+  private lastEditedLength = 0;
+  private editTimer: ReturnType<typeof setTimeout> | null = null;
+  private finished = false;
+
+  constructor(api: Api<RawApi>, chatId: number) {
+    this.api = api;
+    this.chatId = chatId;
+  }
+
+  /** Called on each text delta from the SDK. */
+  onDelta(_delta: string, accumulated: string): void {
+    this.accumulated = accumulated;
+    this.scheduleEdit();
+  }
+
+  /** Schedule a debounced edit. */
+  private scheduleEdit(): void {
+    if (this.editTimer || this.finished) return;
+    this.editTimer = setTimeout(() => {
+      this.editTimer = null;
+      void this.flush();
+    }, STREAM_EDIT_INTERVAL_MS);
+  }
+
+  /** Flush accumulated text to Telegram. */
+  private async flush(): Promise<void> {
+    if (this.finished) return;
+    const text = this.accumulated;
+    if (!text || text.length - this.lastEditedLength < STREAM_CHAR_THRESHOLD) return;
+
+    try {
+      // If text exceeds 4096, we need to finalize current message and start a new one
+      if (text.length > MAX_MESSAGE_LENGTH) {
+        await this.handleOverflow(text);
+        return;
+      }
+
+      if (!this.messageId) {
+        // First message — send it
+        const sent = await this.api.sendMessage(this.chatId, text + ' ▍');
+        this.messageId = sent.message_id;
+        this.sentMessages.push(sent.message_id);
+      } else {
+        // Edit existing message with new content
+        await this.api.editMessageText(this.chatId, this.messageId, text + ' ▍');
+      }
+      this.lastEditedLength = text.length;
+    } catch (err) {
+      // Telegram edit errors (message not modified, etc.) — ignore
+      logger.debug({ err }, 'Stream edit failed (non-fatal)');
+    }
+  }
+
+  /** Handle text that exceeds Telegram's 4096 char limit. */
+  private async handleOverflow(text: string): Promise<void> {
+    // Find a good split point near MAX_MESSAGE_LENGTH
+    const splitRegion = text.slice(0, MAX_MESSAGE_LENGTH - 10);
+    const lastNewline = splitRegion.lastIndexOf('\n');
+    const splitAt = lastNewline > MAX_MESSAGE_LENGTH / 2 ? lastNewline : MAX_MESSAGE_LENGTH - 10;
+
+    const finalized = text.slice(0, splitAt);
+    const remainder = text.slice(splitAt);
+
+    try {
+      // Finalize current message (remove cursor)
+      if (this.messageId) {
+        await this.api.editMessageText(this.chatId, this.messageId, finalized);
+      }
+
+      // Start a new message with the remainder
+      const sent = await this.api.sendMessage(this.chatId, remainder + ' ▍');
+      this.messageId = sent.message_id;
+      this.sentMessages.push(sent.message_id);
+      this.lastEditedLength = text.length;
+    } catch (err) {
+      logger.debug({ err }, 'Stream overflow handling failed (non-fatal)');
+    }
+  }
+
+  /**
+   * Finalize streaming: remove the cursor and return true if we streamed anything.
+   * The caller should skip its own ctx.reply() if this returns true.
+   */
+  async finalize(finalText: string): Promise<boolean> {
+    this.finished = true;
+    if (this.editTimer) {
+      clearTimeout(this.editTimer);
+      this.editTimer = null;
+    }
+
+    // Nothing was streamed
+    if (!this.messageId) return false;
+
+    // Delete all streamed messages — the caller will send the final formatted version
+    for (const msgId of this.sentMessages) {
+      try {
+        await this.api.deleteMessage(this.chatId, msgId);
+      } catch {
+        // Message already deleted or inaccessible
+      }
+    }
+    this.sentMessages = [];
+    this.messageId = null;
+
+    return true;
+  }
+}
+
 // ── File marker types ─────────────────────────────────────────────────
 export interface FileMarker {
   type: 'document' | 'photo';
@@ -491,6 +612,9 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     const abortCtrl = new AbortController();
     setActiveAbort(chatIdStr, abortCtrl);
 
+    // Stream text to Telegram in real-time via message edits
+    const streamer = new TelegramStreamer(ctx.api, chatId);
+
     const result = await runAgent(
       fullMessage,
       sessionId,
@@ -498,16 +622,24 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       onProgress,
       chatModelOverride.get(chatIdStr) ?? agentDefaultModel,
       abortCtrl,
+      (delta, accumulated) => streamer.onDelta(delta, accumulated),
     );
 
     setActiveAbort(chatIdStr, null);
     clearInterval(typingInterval);
 
-    // Handle abort — send short confirmation and stop
+    // Handle abort or timeout — send confirmation and stop
     if (result.aborted) {
+      await streamer.finalize('');
       setProcessing(chatIdStr, false);
-      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: 'Stopped.', source: 'telegram' });
-      await ctx.reply('Stopped.');
+      if (result.timedOut) {
+        const msg = 'Se colgó el proceso (timeout). Mandame el mensaje de nuevo.';
+        emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'telegram' });
+        await ctx.reply(msg);
+      } else {
+        emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: 'Stopped.', source: 'telegram' });
+        await ctx.reply('Stopped.');
+      }
       return;
     }
 
@@ -553,6 +685,9 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // OR if they've toggled /voice on for text messages.
     const caps = voiceCapabilities();
     const shouldSpeakBack = caps.tts && (forceVoiceReply || voiceEnabledChats.has(chatIdStr));
+
+    // Finalize streaming — clean up streamed preview messages
+    await streamer.finalize(responseText);
 
     // Send text response (if there's any left after stripping markers)
     if (responseText) {
@@ -701,6 +836,10 @@ export function createBot(): Bot {
     { command: 'stop', description: 'Stop current processing' },
     { command: 'agents', description: 'List available agents' },
     { command: 'delegate', description: 'Delegate task to agent' },
+    { command: 'advisor', description: 'Toggle advisor mode (Arturo/Elena/Miguel/Valeria)' },
+    { command: 'projects', description: 'View kanban projects' },
+    { command: 'journal', description: 'Daily journal' },
+    { command: 'nota', description: 'Quick note' },
   ];
   const skillCommands = discoverSkillCommands();
   const allCommands = [...builtInCommands, ...skillCommands].slice(0, 100); // Telegram limit: 100 commands
@@ -1140,6 +1279,29 @@ export function createBot(): Bot {
     if (text.startsWith('/')) {
       const cmd = text.split(/[\s@]/)[0].toLowerCase();
       if (OWN_COMMANDS.has(cmd)) return; // already handled by bot.command() above
+    }
+
+    // ── @mention advisor shortcut ───────────────────────────────────
+    // Detect @arturo, @elena, @miguel, @valeria (or @ceo, @sales, @architect, @marketing)
+    // and route to the advisor API as a one-shot message without activating advisor mode.
+    const mentionMatch = text.match(/@(arturo|elena|miguel|valeria|ceo|sales|architect|marketing)\b/i);
+    if (mentionMatch && !advisorState.has(chatIdStr)) {
+      await sendTyping(ctx.api, ctx.chat!.id);
+      const typingInterval = setInterval(() => void sendTyping(ctx.api, ctx.chat!.id), TYPING_REFRESH_MS);
+      try {
+        const thread = await getOrCreateAdvisorThread();
+        const response = await sendAdvisorMessage(thread.id, text);
+        clearInterval(typingInterval);
+        const formatted = formatForTelegram(response || 'No response.');
+        for (const part of splitMessage(formatted)) {
+          await ctx.reply(part, { parse_mode: 'HTML' });
+        }
+      } catch (err) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Advisor @mention failed');
+        await ctx.reply('No pude conectar con el advisor. Revisa que el API este corriendo.');
+      }
+      return;
     }
 
     // ── Advisor state machine ─────────────────────────────────────

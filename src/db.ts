@@ -1041,6 +1041,17 @@ export function getHiveMindEntries(limit = 20, agentId?: string): HiveMindEntry[
     .all(limit) as HiveMindEntry[];
 }
 
+export function getHiveMindByAction(action: string, limit = 20, agentId?: string): HiveMindEntry[] {
+  if (agentId) {
+    return db
+      .prepare('SELECT * FROM hive_mind WHERE action = ? AND agent_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(action, agentId, limit) as HiveMindEntry[];
+  }
+  return db
+    .prepare('SELECT * FROM hive_mind WHERE action = ? ORDER BY created_at DESC LIMIT ?')
+    .all(action, limit) as HiveMindEntry[];
+}
+
 /**
  * Get conversation turns for a specific session, ordered chronologically.
  * Used for hive-mind auto-commit on session end.

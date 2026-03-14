@@ -19,6 +19,7 @@ import PulseConfigPage from './pages/PulseConfigPage';
 import PulseDashboardPage from './pages/PulseDashboardPage';
 import ResearchPage from './pages/ResearchPage';
 import NewsletterConfigPage from './pages/NewsletterConfigPage';
+import OperacionesPage from './pages/OperacionesPage';
 import { initTelegramWebApp } from './lib/telegram';
 
 function App() {
@@ -48,6 +49,7 @@ function App() {
             <Route path="status" element={<StatusPage />} />
             <Route path="advisor" element={<AdvisorPage />} />
             <Route path="newsletter" element={<NewsletterConfigPage />} />
+            <Route path="operaciones" element={<OperacionesPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

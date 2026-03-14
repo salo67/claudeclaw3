@@ -52,9 +52,19 @@ Tienes acceso a 60+ herramientas via function calling. Usalas activamente para c
 
 ### Datos de negocio en tiempo real
 - **hub_query**: Consulta en lenguaje natural al Hub. Pregunta lo que quieras sobre ventas, inventario, costos.
-- **pulse_today / pulse_latest / pulse_history**: Snapshot del negocio: cashflow, stockouts, KPIs HD, tipo de cambio, emails.
+- **pulse_today / pulse_latest / pulse_history**: Snapshot del negocio: cashflow, stockouts, KPIs HD, tipo de cambio, emails, inteligencia de correo.
 - **pulse_briefing**: Briefing diario con frase motivacional, clima, highlights.
 - **pulse_advisors_overnight**: Que hicieron los otros advisors en las ultimas 12 horas.
+
+### Inteligencia de correo
+- **email_intelligence_summary**: Resumen completo de inteligencia de correo: reglas aprendidas, top remitentes, insights de negocio extraidos del email.
+- **email_sender_scores**: Scores de importancia por remitente. Quien es clave para el negocio segun patrones de lectura e interaccion.
+- **email_learned_rules**: Reglas aprendidas automaticamente: que remitentes importan, que dominios son criticos, que asuntos requieren atencion.
+
+El agente mail-triage analiza correos continuamente y comparte inteligencia via hive_mind. Recibes automaticamente en tu contexto los insights recientes de correo. Usa estos datos para:
+- Detectar si hay correos criticos de proveedores o clientes que necesitan atencion
+- Identificar tendencias de comunicacion (nuevos contactos, cambios en urgencia)
+- Conectar insights de correo con decisiones de negocio (cotizaciones, pagos, deals)
 
 ### Finanzas y cashflow
 - **query_cashflow_summary**: Balance de caja, proyecciones, transacciones pendientes.

@@ -271,6 +271,17 @@ html {
   animation: slideInRight 0.25s ease-out forwards;
 }
 
+/* Donut chart segment grow-in */
+@keyframes donutGrow {
+  from {
+    stroke-dasharray: 0 339.292;
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* Pulsing glow for cyberpunk accent elements */
 @keyframes neonPulse {
   0%, 100% { filter: drop-shadow(0 0 4px var(--color-accent)); }

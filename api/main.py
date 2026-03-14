@@ -21,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import action_items, advisor, alerts, autopilot, discovery, documents, features, journal, notes, projects, pulse_briefing, pulse_config, pulse_today, pulse_urgent, research, scheduler, status, tasks, tts
+from routers import action_items, advisor, alerts, autopilot, discovery, documents, features, forecast_feedback, journal, notes, projects, pulse_briefing, pulse_config, pulse_today, pulse_urgent, research, scheduler, status, tasks, tts
 
 app.include_router(projects.router, prefix="/api", tags=["projects"])
 app.include_router(features.router, prefix="/api", tags=["features"])
@@ -42,6 +42,7 @@ app.include_router(pulse_today.router, prefix="/api", tags=["pulse"])
 app.include_router(pulse_briefing.router, prefix="/api", tags=["pulse"])
 app.include_router(pulse_urgent.router, prefix="/api", tags=["pulse"])
 app.include_router(research.router, prefix="/api", tags=["research"])
+app.include_router(forecast_feedback.router, prefix="/api", tags=["forecast-feedback"])
 
 # Serve dashboard static files (after dashboard is built)
 dashboard_dist = Path(__file__).parent.parent / "dashboard" / "dist"
@@ -59,6 +60,17 @@ def on_startup() -> None:
     from database import init_db
 
     init_db()
+
+    # Initialize forecast feedback tables
+    try:
+        from routers.forecast_feedback import init_feedback_tables
+        import sqlite3
+        conn = sqlite3.connect(str(Path(__file__).parent.parent / "store" / "claudeclaw.db"), timeout=10)
+        conn.row_factory = sqlite3.Row
+        init_feedback_tables(conn)
+        conn.close()
+    except Exception:
+        pass
 
     # Run salience decay on advisor memories
     try:

@@ -47,6 +47,16 @@ Tienes acceso a 60+ herramientas via function calling. Usalas para respaldar cad
 - **pulse_today / pulse_latest / pulse_history**: Snapshot del negocio, metricas del dia.
 - **pulse_advisors_overnight**: Que descubrieron los otros advisors recientemente.
 
+### Inteligencia de correo
+- **email_intelligence_summary**: Resumen de inteligencia de correo con insights de negocio.
+- **email_sender_scores**: Scores de importancia por remitente.
+- **email_learned_rules**: Reglas aprendidas de patrones de correo.
+
+El agente mail-triage comparte inteligencia de correo. Usa estos datos para:
+- Detectar oportunidades de marketing mencionadas en correos (ferias, campanas de proveedores)
+- Identificar feedback de clientes que llega por email
+- Rastrear comunicaciones de Amazon, MercadoLibre u otros canales
+
 ### Inventario (para planear campanas)
 - **query_stockout_dashboard / query_stockout_products / query_stockout_alerts**: Que hay en stock, que se va a acabar.
 - **query_forecast / query_forecast_abc / query_forecast_inventory**: Forecast, clasificacion ABC, dias de inventario.

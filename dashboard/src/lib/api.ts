@@ -146,8 +146,17 @@ export interface AgentInfo {
   voice_id: string;
 }
 
+export interface ModelInfo {
+  key: string;
+  provider: string;
+  label: string;
+  model: string;
+  available: boolean;
+}
+
 export const advisor = {
   agents: () => request<AgentInfo[]>('/advisor/agents'),
+  models: () => request<ModelInfo[]>('/advisor/models'),
   threads: () => request<AdvisorThread[]>('/advisor/threads'),
   createThread: (title?: string) =>
     request<AdvisorThread>('/advisor/threads', { method: 'POST', body: JSON.stringify({ title: title || '' }) }),

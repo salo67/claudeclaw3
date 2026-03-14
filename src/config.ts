@@ -102,6 +102,11 @@ export const MAX_MESSAGE_LENGTH = 4096;
 // Telegram's typing action expires after ~5s, so 4s keeps it continuous.
 export const TYPING_REFRESH_MS = 4000;
 
+// Maximum time (ms) to wait for the agent to respond before aborting.
+// Prevents "typing..." forever if the SDK subprocess hangs.
+// Default: 5 minutes.
+export const AGENT_TIMEOUT_MS = 5 * 60 * 1000;
+
 // Context window limit for the model. Opus 4.6 (1M context) = 1,000,000.
 // Override via CONTEXT_LIMIT in .env if using a different model variant.
 export const CONTEXT_LIMIT = parseInt(

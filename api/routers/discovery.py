@@ -20,14 +20,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import google.genai as genai
 import httpx
 from fastapi import APIRouter, Query
-from google.genai import types
 from pydantic import BaseModel
 
-from api_tools import TOOL_DECLARATIONS, execute_tool, log_cost
+from api_tools import TOOLS_SCHEMA, execute_tool, log_cost
 from discovery_prompts import DISCOVERY_PROMPTS
+from llm_providers import get_provider, is_provider_available
 
 logger = logging.getLogger(__name__)
 
@@ -40,22 +39,23 @@ TELEGRAM_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "")
 
 MAX_TOOL_ROUNDS = 3
 MAX_TOOL_CALLS = 12
-DISCOVERY_MODEL = "gemini-2.5-flash"  # Change to "gemini-2.5-pro" for deeper reasoning (10x cost)
-
 PARTICIPATING_ADVISORS = ["ceo", "sales", "marketing"]
 
 ADVISOR_NAMES = {"ceo": "Arturo", "sales": "Elena", "marketing": "Valeria"}
 
-_gemini_client: genai.Client | None = None
 
-
-def _get_gemini_client() -> genai.Client:
-    global _gemini_client
-    if _gemini_client is None:
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-        os.environ.pop("GEMINI_API_KEY", None)
-        _gemini_client = genai.Client(api_key=api_key)
-    return _gemini_client
+def _pick_discovery_provider() -> tuple[str, str]:
+    """Pick best available provider/model for discovery."""
+    preferences = [
+        ("anthropic", "claude-haiku-4-5-20251001"),
+        ("gemini", "gemini-2.5-flash"),
+        ("openai", "gpt-4o-mini"),
+        ("kimi", "moonshot-v1-auto"),
+    ]
+    for pkey, model in preferences:
+        if is_provider_available(pkey):
+            return pkey, model
+    return preferences[0]
 
 
 def _connect() -> sqlite3.Connection:
@@ -101,99 +101,80 @@ async def _run_advisor(advisor_key: str) -> tuple[list[dict], int, int]:
     if not system_prompt:
         return [], 0, 0
 
-    client = _get_gemini_client()
-    contents: list = []
+    pkey, model = _pick_discovery_provider()
+    provider = get_provider(pkey)
+    messages: list[dict] = []
     total_in = 0
     total_out = 0
     total_calls = 0
 
     # Initial user message to trigger the loop
-    contents.append({"role": "user", "parts": [{"text": "Ejecuta tu analisis de descubrimiento ahora. Usa las herramientas para consultar datos reales y responde con findings en JSON."}]})
+    messages.append({"role": "user", "content": "Ejecuta tu analisis de descubrimiento ahora. Usa las herramientas para consultar datos reales y responde con findings en JSON."})
 
     for _round in range(MAX_TOOL_ROUNDS):
         try:
-            result = client.models.generate_content(
-                model=DISCOVERY_MODEL,
-                contents=contents,
-                config={
-                    "system_instruction": system_prompt,
-                    "temperature": 0.7,
-                    "max_output_tokens": 4096,
-                    "tools": [TOOL_DECLARATIONS],
-                },
+            result = await provider.chat(
+                model=model,
+                system=system_prompt,
+                messages=messages,
+                tools=TOOLS_SCHEMA,
+                max_tokens=4096,
+                temperature=0.7,
             )
         except Exception as e:
-            logger.error("Discovery Gemini error for %s: %s", advisor_key, e)
+            logger.error("Discovery LLM error for %s: %s", advisor_key, e)
             return [], total_in, total_out
 
-        if result.usage_metadata:
-            total_in += result.usage_metadata.prompt_token_count or 0
-            total_out += result.usage_metadata.candidates_token_count or 0
+        total_in += result.input_tokens
+        total_out += result.output_tokens
 
-        if not result.candidates or not result.candidates[0].content or not result.candidates[0].content.parts:
-            break
+        if result.tool_calls and total_calls < MAX_TOOL_CALLS:
+            # Build assistant message with text + tool calls info
+            assistant_parts = []
+            if result.text:
+                assistant_parts.append(result.text)
+            for tc in result.tool_calls:
+                assistant_parts.append(f"[Tool call: {tc.name}({json.dumps(tc.args)})]")
+            messages.append({"role": "assistant", "content": "\n".join(assistant_parts)})
 
-        # Check for function calls
-        function_calls = [p for p in result.candidates[0].content.parts if p.function_call]
-
-        if function_calls and total_calls < MAX_TOOL_CALLS:
-            contents.append(result.candidates[0].content)
-
-            function_responses = []
-            for fc_part in function_calls:
+            # Execute tools and build results
+            tool_results = []
+            for tc in result.tool_calls:
                 if total_calls >= MAX_TOOL_CALLS:
                     break
-                fc = fc_part.function_call
-                tool_name = fc.name
-                tool_args = dict(fc.args) if fc.args else {}
                 total_calls += 1
-
-                logger.info("Discovery [%s] calling tool: %s", advisor_key, tool_name)
+                logger.info("Discovery [%s] calling tool: %s", advisor_key, tc.name)
                 try:
-                    tool_result = await execute_tool(tool_name, tool_args, advisor_key=advisor_key)
+                    tool_result = await execute_tool(tc.name, tc.args, advisor_key=advisor_key)
                 except Exception as e:
                     tool_result = json.dumps({"error": str(e)[:300]})
+                tool_results.append(f"[{tc.name}]: {tool_result}")
 
-                function_responses.append(
-                    types.Part(function_response=types.FunctionResponse(
-                        name=tool_name,
-                        response={"result": tool_result},
-                    ))
-                )
-
-            contents.append(types.Content(role="user", parts=function_responses))
+            messages.append({"role": "user", "content": "Tool results:\n" + "\n\n".join(tool_results)})
             continue
 
-        # No function calls -- extract text response
-        text_parts = [p.text for p in result.candidates[0].content.parts if p.text]
-        full_text = "".join(text_parts)
-
-        # Parse findings JSON from response
-        findings = _parse_findings(full_text, advisor_key)
-        return findings, total_in, total_out
+        # No tool calls -- extract text response
+        if result.text:
+            findings = _parse_findings(result.text, advisor_key)
+            return findings, total_in, total_out
+        break
 
     # If we exhausted rounds, make one final call telling the model to summarize as JSON
     try:
-        # Filter out any None content entries that could crash the SDK
-        contents = [c for c in contents if c is not None]
-        contents.append({"role": "user", "parts": [{"text": "Ya tienes toda la informacion. Ahora responde UNICAMENTE con el JSON array de findings. No hagas mas tool calls."}]})
-        final_result = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
-            config={
-                "system_instruction": system_prompt,
-                "temperature": 0.3,
-                "max_output_tokens": 4096,
-            },
+        messages.append({"role": "user", "content": "Ya tienes toda la informacion. Ahora responde UNICAMENTE con el JSON array de findings. No hagas mas tool calls."})
+        final_result = await provider.chat(
+            model=model,
+            system=system_prompt,
+            messages=messages,
+            tools=[],
+            max_tokens=4096,
+            temperature=0.3,
         )
-        if final_result.usage_metadata:
-            total_in += final_result.usage_metadata.prompt_token_count or 0
-            total_out += final_result.usage_metadata.candidates_token_count or 0
+        total_in += final_result.input_tokens
+        total_out += final_result.output_tokens
 
-        if final_result.candidates and final_result.candidates[0].content and final_result.candidates[0].content.parts:
-            text_parts = [p.text for p in final_result.candidates[0].content.parts if p.text]
-            full_text = "".join(text_parts)
-            findings = _parse_findings(full_text, advisor_key)
+        if final_result.text:
+            findings = _parse_findings(final_result.text, advisor_key)
             return findings, total_in, total_out
     except Exception as e:
         logger.error("Discovery final call error for %s: %s", advisor_key, e)
@@ -385,16 +366,21 @@ def _save_findings(findings: list[dict], run_id: str) -> None:
         conn.close()
 
 
-# ── Gemini cost estimation ────────────────────────────────────
+# ── Cost estimation ────────────────────────────────────────
 
-# Gemini 2.5 Flash pricing (approximate)
-GEMINI_FLASH_COST_PER_1K_INPUT = 0.00015
-GEMINI_FLASH_COST_PER_1K_OUTPUT = 0.0006
+# Approximate pricing per 1K tokens (input, output)
+_COST_MAP = {
+    "anthropic": (0.0008, 0.004),   # Haiku 4.5
+    "gemini":    (0.00015, 0.0006), # Flash
+    "openai":    (0.00015, 0.0006), # GPT-4o-mini
+    "kimi":      (0.0002, 0.001),   # Moonshot
+}
 
 
 def _estimate_cost(total_in: int, total_out: int) -> float:
-    return (total_in / 1000 * GEMINI_FLASH_COST_PER_1K_INPUT +
-            total_out / 1000 * GEMINI_FLASH_COST_PER_1K_OUTPUT)
+    pkey, _ = _pick_discovery_provider()
+    ci, co = _COST_MAP.get(pkey, (0.0002, 0.001))
+    return total_in / 1000 * ci + total_out / 1000 * co
 
 
 # ── Endpoints ─────────────────────────────────────────────────
@@ -428,9 +414,10 @@ async def run_discovery(triggered_by: str = Query("manual", pattern="^(manual|sc
         total_out += tokens_out
 
         # Log cost per advisor
+        pkey, disc_model = _pick_discovery_provider()
         await log_cost(
-            api_name="google",
-            endpoint=DISCOVERY_MODEL,
+            api_name=pkey,
+            endpoint=disc_model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             notes=f"discovery:{advisor_key}",

@@ -227,6 +227,23 @@ const sidebarGroups: SidebarGroup[] = [
       },
     ],
   },
+  {
+    title: 'OPERACIONES',
+    items: [
+      {
+        to: '/operaciones',
+        label: 'Control Panel',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="9" cy="9" r="7" />
+            <path d="M9 5v4" />
+            <path d="M9 9l3 2" />
+            <circle cx="9" cy="9" r="1" fill="currentColor" stroke="none" />
+          </svg>
+        ),
+      },
+    ],
+  },
 ];
 
 function openExternalApp(url: string, windowName: string) {

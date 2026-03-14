@@ -23,6 +23,7 @@ import {
   getSession,
   getSessionTokenUsage,
   getHiveMindEntries,
+  getHiveMindByAction,
   getAgentTokenStats,
   getAgentRecentConversation,
   // ── New CRUD imports ──
@@ -252,8 +253,11 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // Hive mind feed
   app.get('/api/hive-mind', (c) => {
     const agentId = c.req.query('agent');
+    const action = c.req.query('action');
     const limit = parseInt(c.req.query('limit') || '20', 10);
-    const entries = getHiveMindEntries(limit, agentId || undefined);
+    const entries = action
+      ? getHiveMindByAction(action, limit, agentId || undefined)
+      : getHiveMindEntries(limit, agentId || undefined);
     return c.json({ entries });
   });
 
@@ -477,11 +481,16 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     });
   });
   app.get('/api/pulse/advisors-overnight', (c) => c.json([]));
-  app.get('/api/pulse/briefing', (c) => {
-    const pulse = getLatestPulse();
-    if (!pulse) return c.json({ date: new Date().toISOString().slice(0, 10), sections: [] });
-    const snapshot = JSON.parse(pulse.snapshot || '{}');
-    return c.json({ date: pulse.date, generated_at: pulse.generated_at, snapshot });
+  app.get('/api/pulse/briefing', async (c) => {
+    try {
+      const resp = await fetch('http://localhost:8031/api/pulse/briefing');
+      if (!resp.ok) throw new Error(`FastAPI returned ${resp.status}`);
+      const data = await resp.json();
+      return c.json(data);
+    } catch (e) {
+      // Fallback: return empty briefing shape matching BriefingData interface
+      return c.json({ quote: '', weather: null, newsletter_highlights: [] });
+    }
   });
   app.post('/api/pulse/generate', async (c) => {
     const HUB_URL = 'http://localhost:8000';
@@ -588,6 +597,18 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       return c.json({ ok: true, id, date, generated_at, snapshot });
     } catch (err: any) {
       return c.json({ ok: false, error: String(err?.message || err) }, 500);
+    }
+  });
+
+  // ── Advisor Costs (proxy to cost tracker) ──────────────
+  app.get('/api/advisor-costs', async (c) => {
+    const days = c.req.query('days') || '30';
+    try {
+      const resp = await fetch(`http://localhost:8200/api/advisor-costs?days=${days}`);
+      if (!resp.ok) throw new Error(`Cost tracker returned ${resp.status}`);
+      return c.json(await resp.json());
+    } catch {
+      return c.json({ advisors: [], total_cost: 0, days: parseInt(days) });
     }
   });
 
@@ -741,7 +762,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
           if (m) process.env[m[1]] = m[2].trim();
         }
       } catch { /* no .env */ }
-      execSync('python -m newsletter', { cwd: newsletterProjectDir, timeout: 300000 });
+      execSync('python -m newsletter --text', { cwd: newsletterProjectDir, timeout: 300000 });
       newsletterGenerating = false;
       return c.json({ ok: true });
     } catch (e: any) {
@@ -766,8 +787,8 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       const res = await fetch(`${NEWSLETTER_API}/sources`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
-      return c.json(await res.json(), res.status);
-    } catch (e: any) { return c.json({ error: e.message }, 502); }
+      return c.json(await res.json(), res.status as any);
+    } catch (e: any) { return c.json({ error: e.message }, 502 as any); }
   });
 
   app.put('/api/newsletter/sources/:id', async (c) => {
@@ -777,16 +798,16 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       const res = await fetch(`${NEWSLETTER_API}/sources/${id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
-      return c.json(await res.json(), res.status);
-    } catch (e: any) { return c.json({ error: e.message }, 502); }
+      return c.json(await res.json(), res.status as any);
+    } catch (e: any) { return c.json({ error: e.message }, 502 as any); }
   });
 
   app.delete('/api/newsletter/sources/:id', async (c) => {
     try {
       const id = c.req.param('id');
       const res = await fetch(`${NEWSLETTER_API}/sources/${id}`, { method: 'DELETE' });
-      return c.json(await res.json(), res.status);
-    } catch (e: any) { return c.json({ error: e.message }, 502); }
+      return c.json(await res.json(), res.status as any);
+    } catch (e: any) { return c.json({ error: e.message }, 502 as any); }
   });
 
   serve({ fetch: app.fetch, port: DASHBOARD_PORT }, () => {

@@ -18,19 +18,23 @@ from models import JournalCreate, JournalResponse, JournalUpdate
 
 router = APIRouter()
 
-# ── Gemini client (reuse same pattern as advisor) ─────────────
-from google import genai
-
-_gemini_client: genai.Client | None = None
+# ── LLM provider (reuse multi-provider abstraction) ─────────────
+from llm_providers import get_provider, is_provider_available
 
 
-def _get_gemini_client() -> genai.Client:
-    global _gemini_client
-    if _gemini_client is None:
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-        os.environ.pop("GEMINI_API_KEY", None)
-        _gemini_client = genai.Client(api_key=api_key)
-    return _gemini_client
+def _pick_provider() -> tuple[str, str]:
+    """Pick the best available provider/model for journal AI."""
+    preferences = [
+        ("anthropic", "claude-haiku-4-5-20251001"),
+        ("gemini", "gemini-2.5-flash"),
+        ("openai", "gpt-4o-mini"),
+        ("glm", "glm-4-flash"),
+        ("kimi", "moonshot-v1-auto"),
+    ]
+    for pkey, model in preferences:
+        if is_provider_available(pkey):
+            return pkey, model
+    return preferences[0]
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -116,7 +120,7 @@ class PromptResponse(BaseModel):
 
 
 @router.get("/journal/ai/prompt", response_model=PromptResponse)
-def get_daily_prompt(db: sqlite3.Connection = Depends(get_db)) -> dict:
+async def get_daily_prompt(db: sqlite3.Connection = Depends(get_db)) -> dict:
     """Generate an AI prompt based on recent journal entries + projects."""
     recent = db.execute(
         "SELECT date, content, mood FROM journal_entries ORDER BY date DESC LIMIT 7"
@@ -146,19 +150,19 @@ def get_daily_prompt(db: sqlite3.Connection = Depends(get_db)) -> dict:
     )
 
     try:
-        client = _get_gemini_client()
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[{"role": "user", "parts": [{"text": user_msg}]}],
-            config={
-                "system_instruction": system,
-                "temperature": 0.8,
-                "max_output_tokens": 200,
-            },
+        pkey, model = _pick_provider()
+        provider = get_provider(pkey)
+        resp = await provider.chat(
+            model=model,
+            system=system,
+            messages=[{"role": "user", "content": user_msg}],
+            tools=[],
+            max_tokens=200,
+            temperature=0.8,
         )
-        prompt = response.text.strip() if response.text else "¿Qué es lo más importante que necesitas resolver hoy?"
+        prompt = resp.text.strip() if resp.text else "Que es lo mas importante que necesitas resolver hoy?"
     except Exception:
-        prompt = "¿Qué es lo más importante que necesitas resolver hoy?"
+        prompt = "Que es lo mas importante que necesitas resolver hoy?"
 
     return {"prompt": prompt}
 
@@ -201,22 +205,20 @@ async def get_summary(weeks: int = 1, db: sqlite3.Connection = Depends(get_db)):
 
     async def event_stream() -> AsyncGenerator[dict, None]:
         try:
-            client = _get_gemini_client()
-            response = client.models.generate_content_stream(
-                model="gemini-2.5-flash",
-                contents=[{"role": "user", "parts": [{"text": user_msg}]}],
-                config={
-                    "system_instruction": system,
-                    "temperature": 0.5,
-                    "max_output_tokens": 2048,
-                },
-            )
+            pkey, model = _pick_provider()
+            provider = get_provider(pkey)
             full = ""
-            for chunk in response:
-                text = chunk.text
-                if text:
-                    full += text
-                    yield {"event": "delta", "data": json.dumps({"text": text})}
+            async for delta in provider.chat_stream(
+                model=model,
+                system=system,
+                messages=[{"role": "user", "content": user_msg}],
+                tools=[],
+                max_tokens=2048,
+                temperature=0.5,
+            ):
+                if delta.text:
+                    full += delta.text
+                    yield {"event": "delta", "data": json.dumps({"text": delta.text})}
             yield {"event": "done", "data": json.dumps({"text": full})}
         except Exception as e:
             yield {"event": "error", "data": json.dumps({"error": str(e)})}

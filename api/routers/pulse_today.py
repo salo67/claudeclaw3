@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, Query
-from google import genai
 
 from database import get_db
+from llm_providers import get_provider, is_provider_available
 
 router = APIRouter()
 
@@ -115,6 +115,7 @@ async def pulse_today(db: sqlite3.Connection = Depends(get_db)) -> dict:
             pending_approvals,
             exchange_rate_result,
             email_stats,
+            email_learning,
             # Hub-sourced sections
             margin_health,
             forecast_alerts,
@@ -147,6 +148,11 @@ async def pulse_today(db: sqlite3.Connection = Depends(get_db)) -> dict:
             # Email stats from port 8055
             _section(client, "email_stats", {
                 "stats": "http://localhost:8055/api/emails/stats",
+            }),
+            # Email learning intelligence from port 8055
+            _section(client, "email_learning", {
+                "stats": "http://localhost:8055/api/learning/stats",
+                "sender_scores": "http://localhost:8055/api/learning/sender-scores?limit=10",
             }),
             # ── Hub-sourced business intelligence ──
             # Margin health: summary + deteriorating + blocked + recommendations
@@ -208,6 +214,7 @@ async def pulse_today(db: sqlite3.Connection = Depends(get_db)) -> dict:
         "pending_approvals": _safe(pending_approvals),
         "exchange_rate": _safe(exchange_rate_result),
         "email_stats": _safe(email_stats),
+        "email_learning": _safe(email_learning),
         # Hub-sourced business intelligence
         "margin_health": _safe(margin_health),
         "forecast_alerts": _safe(forecast_alerts),
@@ -323,23 +330,12 @@ def pulse_latest(db: sqlite3.Connection = Depends(get_db)) -> dict:
 # ── Advisor Overnight Summary ───────────────────────────────
 
 
-_gemini_client: genai.Client | None = None
-
-
-def _get_gemini_client() -> genai.Client:
-    global _gemini_client
-    if _gemini_client is None:
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-        _gemini_client = genai.Client(api_key=api_key)
-    return _gemini_client
-
-
-_OVERNIGHT_PROMPT = """Analiza los siguientes mensajes de los asesores de las ultimas 12 horas.
+_OVERNIGHT_SYSTEM = """Analiza los siguientes mensajes de los asesores de las ultimas 12 horas.
 Extrae y clasifica en tres categorias:
 
-1. **decisions**: Decisiones tomadas o recomendadas por los asesores
-2. **pending_approvals**: Items que requieren aprobacion o accion del usuario
-3. **actions_taken**: Acciones concretas que los asesores ejecutaron
+1. decisions: Decisiones tomadas o recomendadas por los asesores
+2. pending_approvals: Items que requieren aprobacion o accion del usuario
+3. actions_taken: Acciones concretas que los asesores ejecutaron
 
 Responde UNICAMENTE con JSON valido, sin markdown ni backticks:
 {
@@ -349,15 +345,27 @@ Responde UNICAMENTE con JSON valido, sin markdown ni backticks:
   "summary": "Resumen breve de la actividad overnight"
 }
 
-Si no hay mensajes relevantes para alguna categoria, usa un array vacio.
+Si no hay mensajes relevantes para alguna categoria, usa un array vacio."""
 
-Mensajes:
-"""
+
+def _pick_overnight_provider() -> tuple[str, str]:
+    """Pick the best available provider/model for overnight summary."""
+    preferences = [
+        ("anthropic", "claude-haiku-4-5-20251001"),
+        ("gemini", "gemini-2.0-flash"),
+        ("openai", "gpt-4o-mini"),
+        ("glm", "glm-4-flash"),
+        ("kimi", "moonshot-v1-auto"),
+    ]
+    for pkey, model in preferences:
+        if is_provider_available(pkey):
+            return pkey, model
+    return preferences[0]  # fallback, will error but that's handled
 
 
 @router.get("/pulse/advisors-overnight")
-def advisors_overnight(db: sqlite3.Connection = Depends(get_db)) -> dict:
-    """Summarize advisor activity from the last 12 hours via Gemini."""
+async def advisors_overnight(db: sqlite3.Connection = Depends(get_db)) -> dict:
+    """Summarize advisor activity from the last 12 hours."""
     cutoff = int(time.time()) - 12 * 3600
     rows = db.execute(
         "SELECT role, content, agent_role, created_at FROM advisor_messages WHERE created_at > ? ORDER BY created_at ASC",
@@ -373,7 +381,6 @@ def advisors_overnight(db: sqlite3.Connection = Depends(get_db)) -> dict:
             "message_count": 0,
         }
 
-    # Build message text for Gemini
     lines = []
     for r in rows:
         agent = r["agent_role"] or r["role"]
@@ -381,12 +388,17 @@ def advisors_overnight(db: sqlite3.Connection = Depends(get_db)) -> dict:
     messages_text = "\n".join(lines)
 
     try:
-        client = _get_gemini_client()
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=_OVERNIGHT_PROMPT + messages_text,
+        pkey, model = _pick_overnight_provider()
+        provider = get_provider(pkey)
+        resp = await provider.chat(
+            model=model,
+            system=_OVERNIGHT_SYSTEM,
+            messages=[{"role": "user", "content": messages_text}],
+            tools=[],
+            max_tokens=1024,
+            temperature=0.3,
         )
-        raw = response.text.strip()
+        raw = resp.text.strip()
         # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
