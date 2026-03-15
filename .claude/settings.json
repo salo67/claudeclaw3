@@ -23,7 +23,12 @@
       "Bash(grep -r \"newsletter\\\\|pulse\\\\|correo\" c:Userssalomon.DC0DocumentsPythonclaudeclaw3-bueno --include=*.js --include=*.ts)",
       "Bash(grep -r newsletter c:Userssalomon.DC0DocumentsPythonclaudeclaw3-buenoapi --include=*.py)",
       "Bash(xargs ls:*)",
-      "Bash(find c:Userssalomon.DC0DocumentsPythonclaudeclaw3-bueno -type f -name *newsletter* -o -name *pulse*correo*)"
+      "Bash(find c:Userssalomon.DC0DocumentsPythonclaudeclaw3-bueno -type f -name *newsletter* -o -name *pulse*correo*)",
+      "Bash(find /c/Users/salomon.DC0/Documents/Python/claudeclaw3-bueno -name *newsletter* -o -name *schedule*)",
+      "Bash(find /c/Users/salomon.DC0/Documents/Python/claudeclaw3-bueno -type f \\\\\\(-name *.md -o -name *.txt -o -name *.json \\\\\\))",
+      "Bash(grep -v \"^$\")",
+      "Bash(schtasks /query /fo CSV /v)",
+      "Bash(find /c/Users/salomon.DC0/Documents/Python -maxdepth 2 -type d -iname *pim* -o -iname *infografia*)"
     ]
   }
 }
