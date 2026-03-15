@@ -782,8 +782,8 @@ function discoverSkillCommands(): Array<{ command: string; description: string }
     try {
       const content = fs.readFileSync(skillFile, 'utf-8');
 
-      // Parse YAML frontmatter between --- delimiters
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      // Parse YAML frontmatter between --- delimiters (handle \r\n on Windows)
+      const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       if (!fmMatch) continue;
 
       const fm = fmMatch[1];
@@ -850,22 +850,33 @@ export function createBot(): Bot {
   // /help — list available commands
   bot.command('help', (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
+    const skillCmds = discoverSkillCommands();
+    const skillLines = skillCmds.length > 0
+      ? '\nSkills:\n' + skillCmds.map(s => `/${s.command} — ${s.description}`).join('\n') + '\n'
+      : '';
     return ctx.reply(
       'ClaudeClaw — Commands\n\n' +
-      '/newchat — Start a new Claude session\n' +
+      'Session:\n' +
+      '/newchat — New Claude session\n' +
       '/respin — Reload recent context\n' +
-      '/voice — Toggle voice mode on/off\n' +
       '/model — Switch model (opus/sonnet/haiku)\n' +
-      '/memory — View recent memories\n' +
+      '/voice — Toggle voice mode\n' +
+      '/memory — View memories\n' +
       '/forget — Clear session\n' +
+      '/stop — Stop processing\n\n' +
+      'Tools:\n' +
       '/wa — WhatsApp messages\n' +
       '/slack — Slack messages\n' +
+      '/journal — Daily journal\n' +
+      '/nota — Quick note\n' +
+      '/projects — Kanban projects\n' +
+      '/advisor — Advisors (Arturo/Elena/Miguel/Valeria)\n' +
+      '/agents — List agents\n' +
+      '/delegate — Delegate to agent\n' +
       '/dashboard — Web dashboard\n' +
-      '/stop — Stop current processing\n' +
-      '/agents — List available agents\n' +
-      '/delegate — Delegate task to agent\n\n' +
-      'Delegation: @agentId: prompt or /delegate agentId prompt\n\n' +
-      'You can also send voice notes, photos, files, and videos.'
+      skillLines + '\n' +
+      'Shortcuts: @agentId: prompt | @arturo @elena @miguel @valeria\n' +
+      'Media: voice, photos, files, videos'
     );
   });
 
