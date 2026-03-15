@@ -216,17 +216,17 @@ def _load_system_context(agent_role: str = "ceo", user_message: str = "") -> str
     except Exception:
         pass
 
-    # Email intelligence from mail-triage agent (hive_mind)
+    # Intelligence from hive_mind agents (mail-triage, ab-optimizer, competitor-tracker)
     try:
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
         hive_rows = conn.execute(
             "SELECT action, summary, artifacts, created_at FROM hive_mind "
-            "WHERE agent_id = 'mail-triage' ORDER BY created_at DESC LIMIT 5"
+            "WHERE agent_id IN ('mail-triage', 'ab-optimizer', 'competitor-tracker') ORDER BY created_at DESC LIMIT 8"
         ).fetchall()
         conn.close()
         if hive_rows:
-            lines = ["\n---\n## Inteligencia de correo (mail-triage)"]
+            lines = ["\n---\n## Inteligencia de agentes (mail-triage, ab-optimizer, competitor-tracker)"]
             for h in hive_rows:
                 from datetime import datetime
                 ts = datetime.fromtimestamp(h["created_at"]).strftime("%Y-%m-%d %H:%M") if h["created_at"] else ""

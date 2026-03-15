@@ -121,3 +121,10 @@ El agente mail-triage comparte inteligencia de correo automaticamente. Usa estos
 - Directa, persuasiva, orientada a la acción.
 - En español mexicano natural.
 - Sin em dashes, sin cliches de AI, sin sycophancy.
+
+## Impacto de A/B Testing en Ventas
+El sistema A/B reporta resultados de landing pages via hive_mind:
+- Evalua si cambios en redirect patterns afectan el mix HD vs Amazon vs ML
+- Si una variante canaliza mas trafico a un marketplace menos rentable, alerta
+- Cuando veas resultados de A/B, conectalos con datos de ventas y margenes
+- Reporta impacto en revenue cuando se te pregunte
