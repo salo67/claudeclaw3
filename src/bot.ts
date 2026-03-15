@@ -20,6 +20,7 @@ import {
 import { clearSession, getRecentConversation, getRecentMemories, getSession, getSessionConversation, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
 import { addJournalEntry, getTodayEntry, getRecentEntries, formatEntry, formatEntryList } from './journal.js';
 import { createNote, getRecentNotes, formatNoteList } from './notes.js';
+import { hdResumen, hdStockouts, hdTop, hdModelo, hdInsightData } from './analisis-hd.js';
 import {
   listProjects, getProject, listFeatures, listTasks,
   updateFeature, updateTask, createFeature,
@@ -840,6 +841,7 @@ export function createBot(): Bot {
     { command: 'projects', description: 'View kanban projects' },
     { command: 'journal', description: 'Daily journal' },
     { command: 'nota', description: 'Quick note' },
+    { command: 'analisishd', description: 'Home Depot analytics' },
   ];
   const skillCommands = discoverSkillCommands();
   const allCommands = [...builtInCommands, ...skillCommands].slice(0, 100); // Telegram limit: 100 commands
@@ -1281,8 +1283,56 @@ export function createBot(): Bot {
     }
   });
 
+  // ── /analisishd — Home Depot analytics ──────────────────────
+  bot.command('analisishd', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const text = ctx.message?.text || '';
+    const body = text.replace(/^\/analisishd\s*/i, '').trim();
+    const sub = body.split(/\s+/)[0]?.toLowerCase() || '';
+    const arg = body.split(/\s+/).slice(1).join(' ').trim();
+
+    try {
+      await sendTyping(ctx.api, ctx.chat!.id);
+
+      if (!sub) {
+        await ctx.reply(await hdResumen());
+      } else if (sub === 'stockouts' || sub === 'huecos') {
+        await ctx.reply(await hdStockouts());
+      } else if (sub === 'top') {
+        await ctx.reply(await hdTop());
+      } else if (sub === 'modelo') {
+        if (!arg) {
+          await ctx.reply('Uso: /analisishd modelo LP-342');
+          return;
+        }
+        await ctx.reply(await hdModelo(arg));
+      } else if (sub === 'insight') {
+        const data = await hdInsightData();
+        const prompt = `Analiza estos datos de Home Depot y dame insights accionables. Sé directo y conciso, en español. Enfócate en: tendencias preocupantes, oportunidades, y acciones inmediatas.\n\n${data}`;
+        const chatIdStr = ctx.chat!.id.toString();
+        const sessionId = getSession(chatIdStr);
+        const result = await runAgent(
+          prompt,
+          sessionId,
+          () => void sendTyping(ctx.api, ctx.chat!.id),
+        );
+        if (result.text) {
+          await ctx.reply(result.text.slice(0, MAX_MESSAGE_LENGTH));
+        } else {
+          await ctx.reply('No pude generar el análisis.');
+        }
+      } else {
+        // Assume it's a model name
+        await ctx.reply(await hdModelo(body));
+      }
+    } catch (err) {
+      logger.error({ err }, '/analisishd command failed');
+      await ctx.reply('No pude conectar con HD API. Verifica que esté corriendo (port 8002).');
+    }
+  });
+
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/advisor', '/projects', '/journal', '/nota']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/advisor', '/projects', '/journal', '/nota', '/analisishd']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();

@@ -156,7 +156,7 @@ class NoteResponse(BaseModel):
 
 # --- Journal ---
 class JournalCreate(BaseModel):
-    date: str
+    date: str | None = None
     content: str = ""
     mood: str = ""
     tags: str = ""
